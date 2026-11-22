@@ -28,7 +28,7 @@ import java.util.Locale
 class RecordService : Service() {
 
     companion object {
-        const val MAX_SLOTS = 3
+        const val MAX_SLOTS = 10
         const val ACTION_STOP_ALL = "stop_all"
         const val ACTION_ADD = "add"
         const val ACTION_STOP_ONE = "stop_one"
