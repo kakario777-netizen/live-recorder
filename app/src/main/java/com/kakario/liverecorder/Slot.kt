@@ -61,6 +61,46 @@ class Slot(
             })();
         """.trimIndent()
 
+        /** 웹소켓 엿듣기: 받은 글(JSON) 안에서 '닉네임 + 내용' 짝을 찾아 넘긴다 */
+        val WS_JS = """
+            (function(){ if (window.__lrWS) return; window.__lrWS = 1;
+              var NW = window.WebSocket; if (!NW) return;
+              var seenIds = {};
+              function str(v){ return typeof v === 'string' && v.length > 0 && v.length < 400; }
+              function pick(o, d){
+                if (!o || typeof o !== 'object' || d > 7) return;
+                var u = o.user || o.author || o.sender || o.userData || null;
+                var nick = (u && (u.username || u.userName || u.login || u.nickname || u.name)) ||
+                           o.username || o.userName || o.nickname || o.nick || o.login || o.senderName;
+                var text = (str(o.text) && o.text) || (str(o.message) && o.message) || (str(o.body) && o.body) ||
+                           (o.details && str(o.details.body) && o.details.body) || (str(o.content) && o.content);
+                if (str(nick) && text) {
+                  var id = o.id || o.messageId || (nick + '|' + text + '|' + (o.createdAt || ''));
+                  if (!seenIds[id]) { seenIds[id] = 1; try { LRChat.ws(nick + '\n' + text); } catch(e){} }
+                  return;
+                }
+                for (var k in o) { try { pick(o[k], d + 1); } catch(e){} }
+              }
+              function onData(s){
+                if (typeof s !== 'string') return;
+                s.split('\n').forEach(function(line){
+                  if (!line) return; var j = null;
+                  try { j = JSON.parse(line); } catch(e) {
+                    var i = line.search(/[\[{]/); if (i >= 0) { try { j = JSON.parse(line.slice(i)); } catch(e2){} }
+                  }
+                  if (j) pick(j, 0);
+                });
+              }
+              function W(u, p){
+                var ws = (p !== undefined) ? new NW(u, p) : new NW(u);
+                ws.addEventListener('message', function(ev){ try { onData(ev.data); } catch(e){} });
+                return ws;
+              }
+              W.prototype = NW.prototype; W.CONNECTING = 0; W.OPEN = 1; W.CLOSING = 2; W.CLOSED = 3;
+              window.WebSocket = W;
+            })();
+        """.trimIndent()
+
         const val WAIT_HQ_MS = 60_000L      // 720p를 기다리는 최대 시간 — 넘으면 그때 화질로 시작
         const val STALL_MS = 20_000L            // 이만큼 새 조각이 없으면 '끊김'으로 보고 확인 시작
         const val PAUSE_CHECK_MS = 30_000L      // 녹화 중 끊김(티켓방·방송 꺼짐): 30초마다 계속 확인, 포기 안 함
@@ -136,7 +176,12 @@ class Slot(
         w.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, req: WebResourceRequest): WebResourceResponse? {
                 val url = req.url.toString()
-                if (Sniff.classify(url) != "seg") return null
+                val kind = Sniff.classify(url)
+                if (kind == "hls" && req.method.equals("GET", true) && !url.contains("_HLS_msn")) {
+                    pinBestQuality(url, req)?.let { return it }
+                    return null
+                }
+                if (kind != "seg") return null
                 val c = Captured(url, "seg", req.requestHeaders ?: emptyMap(), pageUrl)
                 // 한 번만 받기: 앱이 대신 받아서 저장용으로 보관하고, 같은 데이터를 재생기에도 넘겨준다
                 if (req.method.equals("GET", true) && !req.requestHeaders.keys.any { it.equals("Range", true) }) {
@@ -207,6 +252,10 @@ class Slot(
             }
         }
         w.addJavascriptInterface(ChatBridge(), "LRChat")
+        // 채팅 연결(웹소켓)을 페이지가 만들기 전에 엿듣는 코드를 심어 둔다 — 화면에 채팅이 안 보여도 받음
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            try { androidx.webkit.WebViewCompat.addDocumentStartJavaScript(w, WS_JS, setOf("*")) } catch (_: Exception) {}
+        }
         web = w
         // 재생기가 높은 화질을 고르도록 큰 화면(1280x720)으로 둔다.
         // '다른 앱 위에 표시'가 허용돼 있으면 투명·터치 불가 창에 붙여 화면이 꺼져도 재생이 유지되게 한다.
@@ -284,6 +333,64 @@ class Slot(
         }
     }
 
+    private fun corsHeaders(r: HttpResult, req: WebResourceRequest): HashMap<String, String> {
+        val hs = HashMap<String, String>()
+        r.headers.forEach { (k, v) ->
+            val lk = k.lowercase()
+            if (lk.startsWith("access-control") || lk == "cache-control" || lk == "timing-allow-origin") hs[k] = v
+        }
+        if (hs.keys.none { it.equals("Access-Control-Allow-Origin", true) }) {
+            req.requestHeaders.entries.firstOrNull { it.key.equals("Origin", true) }?.let {
+                hs["Access-Control-Allow-Origin"] = it.value
+                hs["Access-Control-Allow-Credentials"] = "true"
+            }
+        }
+        return hs
+    }
+
+    @Volatile private var pinnedLogged = false
+
+    /**
+     * 화질 고정: 재생기가 받는 '화질 목록'에서 가장 좋은 화질 하나만 남겨서 넘긴다.
+     * 재생기가 고를 게 없으니 240p·480p로 왔다 갔다 하지 않는다. (흐린 화면 목록은 건드리지 않음)
+     */
+    private fun pinBestQuality(url: String, req: WebResourceRequest): WebResourceResponse? {
+        return try {
+            val c = Captured(url, "hls", req.requestHeaders ?: emptyMap(), pageUrl)
+            val r = Net.get(url, c, ua, timeoutMs = 15000, maxBytes = 2 * 1024 * 1024)
+            if (r.code !in 200..299) return null
+            var text = String(r.body)
+            if (text.contains("#EXT-X-STREAM-INF")) {
+                val lines = text.lines()
+                data class V(val inf: String, val uri: String, val bw: Long, val blurred: Boolean)
+                val vs = ArrayList<V>()
+                val keep = ArrayList<String>()
+                var i = 0
+                while (i < lines.size) {
+                    val l = lines[i]
+                    if (l.startsWith("#EXT-X-STREAM-INF")) {
+                        val uri = lines.getOrNull(i + 1)?.trim() ?: ""
+                        val bw = Regex("""BANDWIDTH=(\d+)""").find(l)?.groupValues?.get(1)?.toLongOrNull() ?: 0
+                        vs.add(V(l, uri, bw, (l + uri).contains("blurred", true)))
+                        i += 2; continue
+                    }
+                    keep.add(l); i++
+                }
+                val pool = vs.filter { !it.blurred }.ifEmpty { vs }
+                val best = pool.maxByOrNull { it.bw }
+                if (best != null && vs.size > 1) {
+                    text = (keep.filter { it.isNotBlank() } + best.inf + best.uri).joinToString("\n") + "\n"
+                    if (!pinnedLogged) {
+                        pinnedLogged = true
+                        val res = Regex("""RESOLUTION=(\d+x\d+)""").find(best.inf)?.groupValues?.get(1) ?: "?"
+                        log("화질 고정: $res (재생기에는 이 화질만 보여 줌, 후보 ${vs.size}개)")
+                    }
+                }
+            }
+            WebResourceResponse("application/vnd.apple.mpegurl", "utf-8", 200, "OK", corsHeaders(r, req), java.io.ByteArrayInputStream(text.toByteArray()))
+        } catch (e: Exception) { null }
+    }
+
     /** 방송 대기·순서 대기 중엔 페이지를 비워 폰 부담·인터넷을 아낀다 */
     private fun sleepPlayer() {
         main.post { web?.loadUrl("about:blank") }
@@ -291,9 +398,19 @@ class Slot(
 
     // ---------- 채팅 ----------
 
+    @Volatile private var wsChat = false
+
     private inner class ChatBridge {
+        /** 화면에서 읽은 채팅 (웹소켓에서 받고 있으면 무시) */
         @android.webkit.JavascriptInterface
-        fun msg(text: String) { onChat(text) }
+        fun msg(text: String) { if (!wsChat) onChat(text) }
+
+        /** 채팅 연결(웹소켓)에서 받은 채팅 "닉네임\n내용" */
+        @android.webkit.JavascriptInterface
+        fun ws(text: String) {
+            if (!wsChat) { wsChat = true; log("채팅을 채팅 연결(웹소켓)에서 받는 중") }
+            onChat(text)
+        }
     }
 
     @Volatile private var chat: ChatWriter? = null
