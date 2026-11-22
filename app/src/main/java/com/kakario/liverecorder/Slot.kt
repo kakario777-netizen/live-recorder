@@ -101,7 +101,7 @@ class Slot(
             })();
         """.trimIndent()
 
-        const val WAIT_HQ_MS = 60_000L      // 720p를 기다리는 최대 시간 — 넘으면 그때 화질로 시작
+        const val WAIT_HQ_MS = 15_000L      // 720p를 기다리는 최대 시간(15초) — 넘으면 그때 화질로 시작
         const val STALL_MS = 20_000L            // 이만큼 새 조각이 없으면 '끊김'으로 보고 확인 시작
         const val PAUSE_CHECK_MS = 30_000L      // 녹화 중 끊김(티켓방·방송 꺼짐): 30초마다 계속 확인, 포기 안 함
         const val START_WAIT_CHECK_MS = 120_000L // 방송 시작 전 대기: 2분마다 확인
@@ -728,7 +728,7 @@ class Slot(
                             sleepPlayer()
                             continue
                         }
-                        if (h in 1 until TARGET_HEIGHT) log("1분 동안 720p가 안 잡혀 ${h}p로 녹화 시작")
+                        if (h in 1 until TARGET_HEIGHT) log("15초 동안 720p가 안 잡혀 ${h}p로 녹화 시작")
                         out = openFile(if (mp4) "mp4" else "ts")
                         recordStartAt = now
                         openChat(path, false)
