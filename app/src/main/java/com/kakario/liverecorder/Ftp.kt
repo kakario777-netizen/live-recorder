@@ -26,6 +26,9 @@ object FtpConfig {
     fun port(ctx: Context) = prefs(ctx).getInt("port", 21)
     fun user(ctx: Context) = prefs(ctx).getString("user", "") ?: ""
     fun folder(ctx: Context) = prefs(ctx).getString("folder", "/녹화") ?: "/녹화"
+    /** 글자 인코딩: auto / UTF-8 / EUC-KR (한글 폴더·파일 이름이 깨질 때 바꿈) */
+    fun encoding(ctx: Context) = prefs(ctx).getString("encoding", "auto") ?: "auto"
+    fun setEncoding(ctx: Context, e: String) = prefs(ctx).edit().putString("encoding", e).apply()
     fun password(ctx: Context): String = try {
         prefs(ctx).getString("pw", null)?.let { decrypt(it) } ?: ""
     } catch (e: Exception) { "" }
@@ -137,6 +140,13 @@ object Uploader {
 
     fun enqueue(ctx: Context, name: String, path: String?, streamer: String) {
         if (path == null || !FtpConfig.ready(ctx)) return
+        // H.264는 변환 후에만 올림 (변환 설정이 켜져 있을 때)
+        if (Tidy.autoH265(ctx) && name.lowercase().endsWith(".mp4") &&
+            Codec.probeUri(ctx, android.net.Uri.fromFile(File(path))) == android.media.MediaFormat.MIMETYPE_VIDEO_AVC) {
+            RecordService.addLog("H.264라 업로드하지 않음 (H.265 변환 후 올림): $name")
+            Tidy.enqueue(ctx, Tidy.Job(name, path, null, streamer))
+            return
+        }
         load(ctx)
         synchronized(queue) {
             if (current?.name == name || queue.any { it.name == name }) return
@@ -193,14 +203,23 @@ object Uploader {
 
     fun connect(ctx: Context): FTPClient {
         val f = FTPClient()
-        f.controlEncoding = "UTF-8"
+        val enc = FtpConfig.encoding(ctx)
+        f.controlEncoding = if (enc == "EUC-KR") "EUC-KR" else "UTF-8"
         f.connectTimeout = 15000
         f.setDataTimeout(java.time.Duration.ofSeconds(60))
         f.connect(FtpConfig.host(ctx), FtpConfig.port(ctx))
         if (!FTPReply.isPositiveCompletion(f.replyCode)) { f.disconnect(); throw Exception("서버 연결 거부 (${f.replyCode})") }
         f.soTimeout = 60000
         if (!f.login(FtpConfig.user(ctx), FtpConfig.password(ctx))) { f.disconnect(); throw Exception("아이디나 비밀번호가 맞지 않아요") }
-        try { f.sendCommand("OPTS UTF8 ON") } catch (_: Exception) {}
+        when (enc) {
+            "EUC-KR" -> {}
+            "UTF-8" -> try { f.sendCommand("OPTS UTF8 ON") } catch (_: Exception) {}
+            else -> {
+                // 자동: 서버가 UTF-8을 지원하면 UTF-8, 아니면 EUC-KR
+                val utf8 = try { f.hasFeature("UTF8") } catch (_: Exception) { true }
+                if (utf8) try { f.sendCommand("OPTS UTF8 ON") } catch (_: Exception) {} else f.controlEncoding = "EUC-KR"
+            }
+        }
         f.enterLocalPassiveMode()
         f.setFileType(FTP.BINARY_FILE_TYPE)
         f.bufferSize = 256 * 1024

@@ -64,7 +64,7 @@ class FilesActivity : Activity() {
         }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) })
 
         root.addView(CheckBox(this).apply {
-            text = "H.264 녹화는 정리할 때 H.265로 자동 변환 (충전 중일 때만)"
+            text = "H.264 녹화는 H.265로 변환 후 업로드 (충전 중에만 변환, 그전엔 대기)"
             textSize = 13f
             isChecked = Tidy.autoH265(this@FilesActivity)
             setPadding(dp(4), 0, 0, 0)
@@ -255,6 +255,15 @@ class FilesActivity : Activity() {
         roles.addView(rSolo); roles.addView(rRec); roles.addView(rRem)
         roles.check(when (Sync.role(this)) { Sync.RECORDER -> 102; Sync.REMOTE -> 103; else -> 101 })
         box.addView(roles)
+        // 글자 인코딩 (한글 이름이 깨질 때)
+        box.addView(TextView(this).apply { text = "글자 인코딩 (NAS의 한글 폴더·파일 이름이 깨질 때 바꿔 보세요)"; textSize = 12f; setTextColor(Color.parseColor("#666666")); setPadding(0, dp(10), 0, 0) })
+        val encs = android.widget.RadioGroup(this).apply { orientation = android.widget.RadioGroup.HORIZONTAL }
+        listOf(201 to "자동", 202 to "UTF-8", 203 to "EUC-KR").forEach { (rid, t) ->
+            encs.addView(android.widget.RadioButton(this).apply { id = rid; text = t; textSize = 13f })
+        }
+        encs.check(when (FtpConfig.encoding(this)) { "UTF-8" -> 202; "EUC-KR" -> 203; else -> 201 })
+        encs.setOnCheckedChangeListener { _, id -> FtpConfig.setEncoding(this, when (id) { 202 -> "UTF-8"; 203 -> "EUC-KR"; else -> "auto" }) }
+        box.addView(encs)
         val result = TextView(this).apply { textSize = 12f; setPadding(0, dp(8), 0, dp(4)) }
         box.addView(result)
         fun save() {

@@ -25,6 +25,12 @@ object Tidy {
     class Job(val name: String, val path: String?, val uri: Uri?, val streamer: String = "")
 
     private val queue = ArrayDeque<Job>()
+    /** H.264라 변환해야 하는데 충전 중이 아니어서 기다리는 파일 (업로드도 안 함) */
+    private val waitCharge = ArrayList<Job>()
+    @Volatile private var transformer: Transformer? = null
+    @Volatile private var curOut: File? = null
+    private var appCtx: Context? = null
+    private var loaded = false
     @Volatile var current: Job? = null; private set
     @Volatile var percent = 0; private set
     @Volatile var lastResult = ""; private set
@@ -37,7 +43,83 @@ object Tidy {
     /** 중복 시작 정보를 뺀 임시본 (정리가 실패해도 이걸로 원본을 바꿔 둠) */
     @Volatile private var dedupUsed: File? = null
 
-    fun busy(): Boolean = current != null || synchronized(queue) { queue.isNotEmpty() }
+    fun busy(): Boolean = current != null || synchronized(queue) { queue.isNotEmpty() || waitCharge.isNotEmpty() }
+
+    fun waitingCount(): Int = synchronized(queue) { waitCharge.size }
+
+    private fun persist() {
+        val ctx = appCtx ?: return
+        val a = org.json.JSONArray()
+        synchronized(queue) {
+            (listOfNotNull(current) + queue + waitCharge).distinctBy { it.name }.forEach {
+                a.put(org.json.JSONObject().put("name", it.name).put("path", it.path ?: "").put("uri", it.uri?.toString() ?: "").put("streamer", it.streamer))
+            }
+        }
+        ctx.getSharedPreferences("main", Context.MODE_PRIVATE).edit().putString("tidyQueue", a.toString()).apply()
+    }
+
+    /** 서비스가 켜질 때: 충전 감지 시작 + 남아 있던 정리·변환 대기 불러오기 */
+    fun init(ctx: Context) {
+        val app = ctx.applicationContext
+        if (appCtx != null) return
+        appCtx = app
+        val f = android.content.IntentFilter().apply {
+            addAction(android.content.Intent.ACTION_POWER_CONNECTED)
+            addAction(android.content.Intent.ACTION_POWER_DISCONNECTED)
+        }
+        val r = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: Context, i: android.content.Intent) {
+                if (i.action == android.content.Intent.ACTION_POWER_CONNECTED) onPowerConnected(app) else onPowerDisconnected(app)
+            }
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33) app.registerReceiver(r, f, Context.RECEIVER_NOT_EXPORTED) else app.registerReceiver(r, f)
+        if (!loaded) {
+            loaded = true
+            try {
+                val a = org.json.JSONArray(app.getSharedPreferences("main", Context.MODE_PRIVATE).getString("tidyQueue", "[]"))
+                for (k in 0 until a.length()) {
+                    val o = a.getJSONObject(k)
+                    val p = o.optString("path").ifEmpty { null }
+                    if (p != null && !File(p).exists()) continue
+                    enqueue(app, Job(o.getString("name"), p, o.optString("uri").ifEmpty { null }?.let { Uri.parse(it) }, o.optString("streamer")))
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun onPowerConnected(ctx: Context) {
+        val moved = synchronized(queue) { val l = waitCharge.toList(); waitCharge.clear(); queue.addAll(l); l.size }
+        if (moved > 0) {
+            RecordService.addLog("충전기 연결됨 → H.265 변환 시작 (${moved}개)")
+            onChange?.invoke()
+            ensureThread()
+            handler?.post { if (current == null) next(ctx) }
+        }
+    }
+
+    private fun onPowerDisconnected(ctx: Context) {
+        val job = current ?: return
+        if (!converting) return
+        RecordService.addLog("충전기가 빠져서 변환 멈춤 → 다시 꽂으면 처음부터 변환: ${job.name}")
+        handler?.post {
+            try { transformer?.cancel() } catch (_: Exception) {}
+            transformer = null
+            curOut?.delete()
+            dedupUsed?.delete(); dedupUsed = null
+            synchronized(queue) { waitCharge.add(job) }
+            current = null; converting = false
+            persist()
+            onChange?.invoke()
+            next(ctx)
+        }
+    }
+
+    private fun ensureThread() {
+        if (thread == null) {
+            thread = HandlerThread("tidy").also { it.start() }
+            handler = Handler(thread!!.looper)
+        }
+    }
 
     /** 파일 목록 표시용: 정리 중이면 "정리 중… 37%", 대기 중이면 "정리 대기" */
     @Volatile var converting = false; private set
@@ -52,6 +134,7 @@ object Tidy {
 
     fun statusOf(name: String): String? = when {
         current?.name == name -> (if (converting) "H.265 변환 중… " else "정리 중… ") + "$percent%"
+        synchronized(queue) { waitCharge.any { it.name == name } } -> "충전 대기 (H.265 변환)"
         synchronized(queue) { queue.any { it.name == name } } -> "정리 대기"
         else -> null
     }
@@ -80,14 +163,13 @@ object Tidy {
             return
         }
         val app = ctx.applicationContext
+        if (appCtx == null) appCtx = app
         synchronized(queue) {
-            if (current?.name == job.name || queue.any { it.name == job.name }) return
+            if (current?.name == job.name || queue.any { it.name == job.name } || waitCharge.any { it.name == job.name }) return
             queue.add(job)
         }
-        if (thread == null) {
-            thread = HandlerThread("tidy").also { it.start() }
-            handler = Handler(thread!!.looper)
-        }
+        persist()
+        ensureThread()
         RecordService.addLog("정리 대기: ${job.name}")
         onChange?.invoke()
         handler?.post { if (current == null) next(app) }
@@ -127,8 +209,16 @@ object Tidy {
         val mime = Codec.probeUri(ctx, input)
         converting = autoH265(ctx) && mime == android.media.MediaFormat.MIMETYPE_VIDEO_AVC && Codec.phoneHasHevcEncoder()
         if (converting && !charging(ctx)) {
+            // H.264는 변환 없이 올리지 않음: 충전기를 꽂을 때까지 기다림
             converting = false
-            RecordService.addLog("충전 중이 아니라 H.265 변환은 건너뛰고 정리만: ${job.name}")
+            dedupUsed?.delete(); dedupUsed = null
+            synchronized(queue) { waitCharge.add(job) }
+            RecordService.addLog("H.264라 충전기를 꽂으면 H.265로 변환해서 올려요 (충전 대기): ${job.name}")
+            current = null
+            persist()
+            onChange?.invoke()
+            h.post { next(ctx) }
+            return
         }
         RecordService.addLog((if (converting) "정리 + H.265 변환 시작: " else "정리 시작: ") + job.name)
         val tb = Transformer.Builder(ctx).setLooper(h.looper)
@@ -147,6 +237,7 @@ object Tidy {
             if (bitrate != null) enc.setRequestedVideoEncoderSettings(VideoEncoderSettings.Builder().setBitrate(bitrate).build())
             tb.setEncoderFactory(enc.build())
         }
+        curOut = out
         val t = tb
             .addListener(object : Transformer.Listener {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {
@@ -157,6 +248,7 @@ object Tidy {
                 }
             })
             .build()
+        transformer = t
         try {
             t.start(MediaItem.fromUri(input), out.absolutePath)
         } catch (e: Exception) {
@@ -200,10 +292,19 @@ object Tidy {
         out.delete()
         lastResult = msg
         RecordService.addLog(msg)
-        // 정리가 끝난 파일(실패해도 원본은 쓸 수 있으니) → FTP 자동 업로드
-        Uploader.enqueue(ctx, job.name, job.path ?: pathFor(job.name), job.streamer)
+        val wasConverting = converting
+        transformer = null; curOut = null
+        if (wasConverting && !ok) {
+            // 변환 실패: H.264를 그대로 올리지 않고, 다음 충전 때 다시 시도
+            synchronized(queue) { waitCharge.add(job) }
+            RecordService.addLog("H.265 변환 실패 → 올리지 않고 다음에 충전기를 꽂을 때 다시 시도: ${job.name}")
+        } else {
+            // 정리·변환이 끝난 파일 → FTP 자동 업로드
+            Uploader.enqueue(ctx, job.name, job.path ?: pathFor(job.name), job.streamer)
+        }
         current = null
         converting = false
+        persist()
         onChange?.invoke()
         handler?.post { next(ctx) }
     }

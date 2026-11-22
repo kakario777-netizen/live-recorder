@@ -162,6 +162,7 @@ class RecordService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        Tidy.init(this)
     }
 
     private fun notification(text: String, ongoing: Boolean): Notification {
@@ -196,6 +197,7 @@ class RecordService : Service() {
         val l = list()
         val tidyLine = Tidy.current?.let { "정리 중… ${Tidy.percent}% — ${it.name}" }
         val upLine = Uploader.current?.let { "업로드 중… ${Uploader.percent}% — ${it.name}" }
+            ?: Tidy.waitingCount().takeIf { it > 0 }?.let { "충전 대기 ${it}개 (충전기를 꽂으면 H.265 변환 후 업로드)" }
         val head = if (l.isNotEmpty()) "받는 중 ${l.count { it.isDownloading }}/$MAX_SLOTS · 등록 ${l.size}개 · ${totalRate() / 1024}KB/s" else null
         status = (listOfNotNull(head) + l.map { "${it.id}. ${it.streamer.ifEmpty { it.host }} — ${it.summary()}" } + listOfNotNull(tidyLine, upLine)).joinToString("\n")
         if (l.isEmpty() && !Tidy.busy() && !Uploader.busy() && Sync.isRecorder(this)) status = "녹화 담당 폰 · 원격 명령 대기 중"
