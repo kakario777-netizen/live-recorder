@@ -356,8 +356,8 @@ class MainActivity : Activity() {
             Toast.makeText(this, "동시 녹화는 최대 ${RecordService.MAX_SLOTS}개예요", Toast.LENGTH_LONG).show(); return
         }
         askBattery()
-        if (!Settings.canDrawOverlays(this) && !prefs.getBoolean("askedOverlay", false)) {
-            prefs.edit().putBoolean("askedOverlay", true).apply()
+        if (!Settings.canDrawOverlays(this) && !prefs.getBoolean("askedOverlay2", false)) {
+            prefs.edit().putBoolean("askedOverlay2", true).apply()
             AlertDialog.Builder(this)
                 .setTitle("화면을 꺼도 녹화되게 하려면")
                 .setMessage("'다른 앱 위에 표시'를 허용해 주세요.\n눈에 안 보이는 창으로 재생을 유지해서, 앱을 내리거나 화면을 꺼도 녹화가 이어져요.\n허용하고 돌아와서 녹화를 다시 눌러 주세요.")
