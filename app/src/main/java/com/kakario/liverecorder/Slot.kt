@@ -126,6 +126,8 @@ class Slot(
     val startedAt = System.currentTimeMillis()
     var recordStartAt = 0L; private set
     val host: String = hostOf(pageUrl).removePrefix("www.")
+    /** 이 사이트의 최대 다운 화질 (설정 › 다운 화질) */
+    val targetH: Int = Quality.forUrl(ctx, pageUrl)
 
     /** 파일 이름에 쓸 스트리머 이름: 사용자가 정한 이름 → 주소의 이름 부분 → 페이지 제목 */
     @Volatile var streamer: String = fixedName.ifEmpty { Names.streamerFromUrl(pageUrl) }; private set
@@ -379,9 +381,9 @@ class Slot(
                 val pool = vs.filter { !it.blurred }.ifEmpty { vs }
                 // 720p 기준: 세로 720 이하 중 가장 좋은 것 → 없으면 720보다 큰 것 중 가장 작은 것
                 fun hOf(v: V) = Regex("""RESOLUTION=\d+x(\d+)""").find(v.inf)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                val upTo720 = pool.filter { hOf(it) in 1..TARGET_HEIGHT }
-                val best = if (upTo720.isNotEmpty()) upTo720.maxByOrNull { it.bw }
-                    else pool.filter { hOf(it) > TARGET_HEIGHT }.minByOrNull { hOf(it) } ?: pool.maxByOrNull { it.bw }
+                val upTo = pool.filter { hOf(it) in 1..targetH }
+                val best = if (upTo.isNotEmpty()) upTo.maxByOrNull { it.bw }
+                    else pool.filter { hOf(it) > targetH }.minByOrNull { hOf(it) } ?: pool.maxByOrNull { it.bw }
                 if (best != null && vs.size > 1) {
                     text = (keep.filter { it.isNotBlank() } + best.inf + best.uri).joinToString("\n") + "\n"
                     if (!pinnedLogged) {
@@ -467,7 +469,7 @@ class Slot(
     }
 
     /** 실제로 영상을 받는 중인지 (동시 10개·속도 한도 계산용) */
-    val isDownloading: Boolean get() = state == "녹화 중" || state == "720 대기중"
+    val isDownloading: Boolean get() = state == "녹화 중" || state == "화질 대기중"
 
     // ---------- 조각 저장 ----------
 
@@ -622,7 +624,7 @@ class Slot(
                         setState(when {
                             everRecorded -> "일시정지"
                             waitingStart -> "방송 대기"
-                            else -> "720 대기중"
+                            else -> "화질 대기중"
                         })
                         val interval = if (everRecorded) PAUSE_CHECK_MS else START_WAIT_CHECK_MS
                         if (now - lastReload > interval) {
@@ -718,8 +720,8 @@ class Slot(
                     if (out == null) {
                         // 시작 전: 720p 이상이 나올 때까지 기다림 (1분 넘으면 그때 화질로 시작)
                         val waited = now - firstSegAt
-                        if (h in 1 until TARGET_HEIGHT && waited < WAIT_HQ_MS) {
-                            setState("720 대기중")
+                        if (h in 1 until targetH && waited < WAIT_HQ_MS) {
+                            setState("화질 대기중")
                             cache.remove(key)
                             continue
                         }
@@ -732,7 +734,7 @@ class Slot(
                             sleepPlayer()
                             continue
                         }
-                        if (h in 1 until TARGET_HEIGHT) log("15초 동안 720p가 안 잡혀 ${h}p로 녹화 시작")
+                        if (h in 1 until targetH) log("15초 동안 ${targetH}p가 안 잡혀 ${h}p로 녹화 시작")
                         out = openFile(if (mp4) "mp4" else "ts")
                         recordStartAt = now
                         openChat(path, false)
@@ -794,6 +796,7 @@ class Slot(
         return when (state) {
             "일시정지" -> "일시정지 (" + (when (pauseKind) { "ticket" -> if (blurOut != null) "티켓방 · 흐린 화면 따로 저장 중" else "티켓방"; "ended" -> "방송 종료"; else -> "끊김" }) + " · ${(System.currentTimeMillis() - lastSegAt) / 60000}분째) · ${bytes / 1024 / 1024}MB"
             "방송 대기" -> "방송 대기 (켜지면 자동 녹화)"
+            "화질 대기중" -> "${targetH}p 대기중"
             "녹화 중" -> "$state · ${min}분 · ${bytes / 1024 / 1024}MB" + (if (quality.isNotEmpty()) " · $quality" else "") +
                 (if (codec.isNotEmpty()) " $codec" else "") + (if (noAudio) " · 소리 없음!" else "") +
                 " · ${rateBps() / 1024}KB/s"

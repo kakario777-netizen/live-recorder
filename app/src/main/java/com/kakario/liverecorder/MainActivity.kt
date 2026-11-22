@@ -89,6 +89,7 @@ class MainActivity : Activity() {
         top.addView(btn("↻") { web.reload() })
         top.addView(btn("☆") { addBookmark() })
         top.addView(btn("★") { showBookmarks() })
+        top.addView(btn("⚙") { showQualitySettings() })
         root.addView(top)
 
         loading = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100; visibility = View.GONE }
@@ -290,6 +291,7 @@ class MainActivity : Activity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 currentPage = url
+                if (url.startsWith("http")) Quality.remember(this@MainActivity, Names.siteName(url))
                 prefs.edit().putString("last", url).apply()
                 CookieManager.getInstance().flush()
             }
@@ -506,6 +508,43 @@ class MainActivity : Activity() {
                 r.bitmap?.let { img.setImageBitmap(it) }
             }
         }.start()
+    }
+
+    /** 설정 › 다운 화질: 사이트마다 최대 화질(1080p / 720p / 480p) 고르기 */
+    private fun showQualitySettings() {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(4), dp(12), dp(8)) }
+        box.addView(TextView(this).apply {
+            text = "사이트마다 녹화할 최대 화질을 골라요. 그 화질이 없으면 바로 아래 화질로 받아요.\n(새로 시작하는 녹화부터 적용)"
+            textSize = 12f; setTextColor(Color.parseColor("#666666")); setPadding(0, 0, 0, dp(8))
+        })
+        fun row(label: String, current: Int, onPick: (Int) -> Unit) {
+            val r = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, dp(4)) }
+            r.addView(TextView(this).apply { text = label; textSize = 14f; setTextColor(Color.parseColor("#222222")) },
+                LinearLayout.LayoutParams(0, -2, 1f))
+            val buttons = ArrayList<Button>()
+            Quality.CHOICES.forEach { h ->
+                val b = btn("${h}p") {}
+                buttons.add(b)
+                r.addView(b)
+            }
+            fun paint(sel: Int) = buttons.forEachIndexed { i, b ->
+                val on = Quality.CHOICES[i] == sel
+                b.setTextColor(Color.parseColor(if (on) "#FFFFFF" else "#555555"))
+                b.setBackgroundColor(Color.parseColor(if (on) "#D32F2F" else "#00000000"))
+            }
+            buttons.forEachIndexed { i, b -> b.setOnClickListener { onPick(Quality.CHOICES[i]); paint(Quality.CHOICES[i]) } }
+            paint(current)
+            box.addView(r)
+        }
+        row("기본값 (그 밖의 사이트)", Quality.default(this)) { Quality.setDefault(this, it) }
+        val sites = Quality.sites(this)
+        if (sites.isEmpty()) box.addView(TextView(this).apply { text = "\n아직 방문한 사이트가 없어요. 방송 사이트를 한 번 열면 여기에 나와요."; textSize = 12f })
+        sites.forEach { site -> row(site, Quality.forSite(this, site)) { Quality.setSite(this, site, it) } }
+        AlertDialog.Builder(this)
+            .setTitle("다운 화질 설정")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("닫기", null)
+            .show()
     }
 
     /** 지금 페이지를 즐겨찾기 — 스트리머 이름을 이름으로 추천, 고친 뒤 저장 */
