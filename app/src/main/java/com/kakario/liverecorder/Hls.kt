@@ -52,6 +52,8 @@ object Hls {
         var idx = 0L
         var partIdx = 0
         var isMaster = false
+        // 일부 사이트는 조각 주소 자리에 가짜 이름을 적고, 진짜 주소를 바로 위 별도 줄에 적어 둔다
+        var realUri: String? = null
         for (l in lines) {
             when {
                 l.startsWith("#EXT-X-STREAM-INF") -> { isMaster = true; pendingVariant = attrs(l) }
@@ -65,10 +67,15 @@ object Hls {
                     key?.let { keys.add(it) }
                 }
                 l.startsWith("#EXT-X-MAP") -> map = attrs(l)["URI"]?.let { resolveUrl(base, it) }
+                l.startsWith("#EXT-X-MOUFLON:URI:") -> {
+                    val u = l.substringAfter("#EXT-X-MOUFLON:URI:").trim()
+                    if (u.isNotEmpty()) realUri = resolveUrl(base, u)
+                }
                 l.startsWith("#EXT-X-PART:") -> {
                     // 부분 조각은 자기가 속한 통째 조각 줄보다 먼저 나온다
                     val a = attrs(l)
-                    val uri = a["URI"]
+                    val uri = realUri ?: a["URI"]
+                    realUri = null
                     if (uri != null) {
                         parts.add(Segment(mediaSeq + idx, resolveUrl(base, uri), key, map, partIdx, a["INDEPENDENT"] == "YES"))
                     }
@@ -81,7 +88,8 @@ object Hls {
                         variants.add(Variant(resolveUrl(base, l), a["BANDWIDTH"]?.toLongOrNull() ?: 0, a["RESOLUTION"], a["CODECS"]))
                         pendingVariant = null
                     } else {
-                        segs.add(Segment(mediaSeq + idx, resolveUrl(base, l), key, map))
+                        segs.add(Segment(mediaSeq + idx, realUri ?: resolveUrl(base, l), key, map))
+                        realUri = null
                         idx++
                         partIdx = 0
                     }

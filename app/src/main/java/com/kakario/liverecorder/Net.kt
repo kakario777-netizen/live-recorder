@@ -36,6 +36,8 @@ object Sniff {
 
     @Synchronized
     fun add(c: Captured) {
+        // 연결 확인용 가짜 목록(ping)은 빼기
+        if (c.url.substringBefore('?').endsWith("/ping.m3u8")) return
         if (c.kind == "seg") {
             // 조각 파일은 진단용으로 앞의 몇 개만 남긴다
             val host = hostOf(c.url)

@@ -408,7 +408,13 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun copyAll(label: String, text: String) {
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(label, text))
+    }
+
     private fun showDiag(text: String, saved: String) {
+        copyAll("진단", text)
+        Toast.makeText(this, "진단 내용 전체를 복사했어요. 채팅에 붙여 넣기만 하세요.", Toast.LENGTH_LONG).show()
         val tv = TextView(this).apply {
             this.text = text
             textSize = 11f
@@ -417,11 +423,10 @@ class MainActivity : Activity() {
         }
         AlertDialog.Builder(this)
             .setTitle("진단 결과")
-            .setMessage("저장: $saved\n'복사'를 눌러 채팅에 붙여 넣어 주세요.")
+            .setMessage("전체 내용이 자동으로 복사됐어요. 채팅에 붙여 넣기만 하세요.\n저장: $saved")
             .setView(ScrollView(this).apply { addView(tv) })
-            .setPositiveButton("복사") { _, _ ->
-                val cm = getSystemService(ClipboardManager::class.java)
-                cm.setPrimaryClip(ClipData.newPlainText("진단", text))
+            .setPositiveButton("다시 복사") { _, _ ->
+                copyAll("진단", text)
                 Toast.makeText(this, "복사했어요", Toast.LENGTH_SHORT).show()
             }
             .setNeutralButton("공유") { _, _ ->
@@ -439,11 +444,13 @@ class MainActivity : Activity() {
             setPadding(dp(14), dp(8), dp(14), dp(8))
         }
         val text = buildLogReport()
+        copyAll("녹화 기록", text)
+        Toast.makeText(this, "기록 전체를 복사했어요. 채팅에 붙여 넣기만 하세요.", Toast.LENGTH_LONG).show()
         AlertDialog.Builder(this)
             .setTitle("녹화 기록")
             .setView(ScrollView(this).apply { addView(tv) })
-            .setPositiveButton("복사") { _, _ ->
-                getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("녹화 기록", text))
+            .setPositiveButton("다시 복사") { _, _ ->
+                copyAll("녹화 기록", text)
                 Toast.makeText(this, "복사했어요. 채팅에 붙여 넣어 주세요.", Toast.LENGTH_SHORT).show()
             }
             .setNeutralButton("공유") { _, _ ->

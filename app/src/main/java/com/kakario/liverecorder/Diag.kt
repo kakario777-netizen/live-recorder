@@ -85,7 +85,9 @@ object Diag {
         }
         sb.appendLine("DRM: " + if (Hls.isDrm(p)) "있음 → 녹화 불가" else "없음")
         sb.appendLine("형식: " + if (p.hasMap) "fMP4(.mp4)" else "TS(.ts)")
-        val s = p.segments.lastOrNull() ?: return
+        if (p.parts.isNotEmpty()) sb.appendLine("저지연 방송: 부분 조각 ${p.parts.size}개")
+        val s = p.parts.lastOrNull { it.independent || it.part == 0 } ?: p.segments.lastOrNull() ?: return
+        sb.appendLine("시험할 조각: ${maskUrl(s.url).take(160)}")
         try {
             val r = Net.get(s.url, c, ua, maxBytes = 8 * 1024 * 1024)
             val head = r.body.take(8).joinToString(" ") { "%02x".format(it) }
