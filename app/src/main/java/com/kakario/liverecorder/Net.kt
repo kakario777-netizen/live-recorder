@@ -20,6 +20,40 @@ object Sniff {
     private val segSamples = LinkedHashMap<String, Captured>()
     var listener: (() -> Unit)? = null
 
+    /** '재생기 따라 저장' 중일 때 재생기가 받아 가는 모든 조각을 넘겨받는 곳 */
+    @Volatile var follow: ((Captured) -> Unit)? = null
+    /** 화질(트랙)별 마지막 초기화 조각(init)과 최근 조각 — 재생기 따라 저장·썸네일용 */
+    private val lastInit = HashMap<String, Captured>()
+    private val recentSeg = LinkedHashMap<String, Captured>()
+
+    /** 조각 파일 이름에서 방송 번호(첫 덩어리) */
+    fun streamId(url: String): String = url.substringBefore('?').substringAfterLast('/').substringBefore('_').substringBefore('.')
+
+    /** 조각 파일 이름에서 화질 트랙(예: 212631638_480p_av1) — 숫자만 있는 덩어리나 init 앞까지 */
+    fun trackOf(url: String): String {
+        val name = url.substringBefore('?').substringAfterLast('/').substringBeforeLast('.')
+        val t = name.split('_')
+        val out = ArrayList<String>()
+        for ((i, x) in t.withIndex()) {
+            if (i > 0 && (x == "init" || x.all { it.isDigit() })) break
+            out.add(x)
+        }
+        return out.joinToString("_")
+    }
+
+    fun isInit(url: String) = url.substringBefore('?').substringAfterLast('/').contains("init", true)
+
+    @Synchronized fun initFor(track: String): Captured? = lastInit[track]
+
+    /** 이 방송의 가장 최근 조각(독립 조각 우선) */
+    @Synchronized fun latestSeg(id: String): Captured? =
+        recentSeg.values.lastOrNull { streamId(it.url) == id && it.url.contains("part0") }
+            ?: recentSeg.values.lastOrNull { streamId(it.url) == id }
+
+    @Synchronized fun latestSegAny(): Captured? = recentSeg.values.lastOrNull()?.let { latestSeg(streamId(it.url)) }
+
+    @Synchronized fun hasSegsFor(id: String) = recentSeg.values.any { streamId(it.url) == id }
+
     fun classify(url: String): String? {
         val path = url.substringBefore('?').substringBefore('#').lowercase()
         return when {
@@ -39,6 +73,12 @@ object Sniff {
         // 연결 확인용 가짜 목록(ping)은 빼기
         if (c.url.substringBefore('?').endsWith("/ping.m3u8")) return
         if (c.kind == "seg") {
+            follow?.invoke(c)
+            if (isInit(c.url)) lastInit[trackOf(c.url)] = c
+            else {
+                recentSeg.remove(c.url); recentSeg[c.url] = c
+                if (recentSeg.size > 60) recentSeg.remove(recentSeg.keys.first())
+            }
             // 조각 파일은 진단용으로 앞의 몇 개만 남긴다
             val host = hostOf(c.url)
             if (segSamples.keys.count { hostOf(it) == host } < 3) segSamples[c.url] = c
@@ -55,7 +95,7 @@ object Sniff {
 
     @Synchronized fun list(): List<Captured> = items.values.toList().reversed()
     @Synchronized fun segments(): List<Captured> = segSamples.values.toList()
-    @Synchronized fun clear() { items.clear(); segSamples.clear(); listener?.invoke() }
+    @Synchronized fun clear() { items.clear(); segSamples.clear(); lastInit.clear(); recentSeg.clear(); listener?.invoke() }
     fun hlsCount() = list().count { it.kind == "hls" }
 }
 

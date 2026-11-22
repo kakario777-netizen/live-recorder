@@ -12,6 +12,47 @@ import java.io.File
 object Preview {
     class Result(val bitmap: Bitmap?, val text: String, val ok: Boolean)
 
+    /** 재생기가 받아 간 실제 조각(초기화 조각 + 최근 조각)으로 썸네일 만들기 */
+    fun fromPlayer(ctx: Context, streamId: String, ua: String): Result {
+        return try {
+            val seg = Sniff.latestSeg(streamId) ?: return Result(null, "재생기가 받은 조각이 아직 없어요", false)
+            val r = Net.get(seg.url, seg, ua, maxBytes = 16 * 1024 * 1024)
+            if (r.code !in 200..299) return Result(null, "조각 받기 실패 (HTTP ${r.code})", false)
+            val mp4 = seg.url.substringBefore('?').endsWith(".mp4")
+            var data = r.body
+            if (mp4) {
+                val init = Sniff.initFor(Sniff.trackOf(seg.url)) ?: return Result(null, "시작 정보(init)가 아직 없어요", false)
+                val i = Net.get(init.url, init, ua)
+                if (i.code !in 200..299) return Result(null, "시작 정보 받기 실패 (HTTP ${i.code})", false)
+                data = i.body + data
+            }
+            frame(ctx, data, if (mp4) "mp4" else "ts", null, "재생 중인 화질 · " + Sniff.trackOf(seg.url).substringAfter('_'))
+        } catch (e: Exception) {
+            Result(null, "확인 실패: ${e.message ?: e.javaClass.simpleName}", false)
+        }
+    }
+
+    private fun frame(ctx: Context, data: ByteArray, ext: String, fallbackCodec: String?, tail: String): Result {
+        val f = File(ctx.cacheDir, "thumb_${System.nanoTime()}.$ext")
+        f.writeBytes(data)
+        var bmp: Bitmap? = null
+        var w = 0; var h = 0
+        try {
+            val mr = MediaMetadataRetriever()
+            try {
+                mr.setDataSource(f.absolutePath)
+                bmp = mr.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: mr.frameAtTime
+                w = mr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                h = mr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+            } finally { mr.release() }
+        } catch (_: Exception) {}
+        val codec = Codec.probeBytes(ctx, data, ext) ?: fallbackCodec
+        f.delete()
+        val small = bmp?.let { b -> if (b.width > 320) Bitmap.createScaledBitmap(b, 320, b.height * 320 / b.width, true) else b }
+        val size = if (w > 0 && h > 0) "${w}x$h · " else ""
+        return Result(small, "$size${Codec.label(codec)} · $tail", true)
+    }
+
     fun make(ctx: Context, c: Captured, ua: String, siblings: List<Captured>): Result {
         val notes = ArrayList<String>()
         return try {

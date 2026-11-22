@@ -302,7 +302,7 @@ class MainActivity : Activity() {
         info.text = when {
             RecordService.running -> RecordService.status.ifBlank { "녹화 준비 중…" }
             RecordService.status.isNotBlank() -> RecordService.status
-            n > 0 -> "영상 주소 ${n}개 찾음 — 녹화를 누르세요"
+            n > 0 || Sniff.latestSegAny() != null -> "영상 찾음 — 녹화를 누르세요"
             others > 0 -> "다른 형식 영상 주소 ${others}개 (진단 저장 후 보내 주세요)"
             else -> "방송을 재생하면 영상 주소를 자동으로 찾아요"
         }
@@ -315,7 +315,7 @@ class MainActivity : Activity() {
             return
         }
         val list = Sniff.list().filter { it.kind == "hls" }
-        if (list.isEmpty()) {
+        if (list.isEmpty() && Sniff.latestSegAny() == null) {
             Toast.makeText(this, "아직 영상 주소를 못 찾았어요. 방송을 먼저 재생해 주세요.", Toast.LENGTH_LONG).show()
             return
         }
@@ -331,6 +331,38 @@ class MainActivity : Activity() {
         val sorted = list.sortedBy { if (it.url.contains("master", true)) 1 else 0 }
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(4), dp(8), dp(4)) }
         lateinit var dlg: AlertDialog
+        // 맨 위: 재생기 따라 저장 (재생기가 실제로 받는 조각을 그대로 저장 — 재생목록이 막힌 사이트용)
+        Sniff.latestSegAny()?.let { seg ->
+            val id = Sniff.streamId(seg.url)
+            val row = LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(6), dp(8), dp(6), dp(8))
+                isClickable = true
+                setBackgroundColor(Color.parseColor("#FFF3E0"))
+            }
+            val img = android.widget.ImageView(this).apply {
+                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                setBackgroundColor(Color.parseColor("#E0E0E0"))
+            }
+            row.addView(img, LinearLayout.LayoutParams(dp(128), dp(72)))
+            val tv = TextView(this).apply {
+                textSize = 13f
+                setTextColor(Color.parseColor("#222222"))
+                setPadding(dp(10), 0, 0, 0)
+                text = "▶ 재생기 따라 저장 (추천)\n화면 불러오는 중…"
+            }
+            row.addView(tv, LinearLayout.LayoutParams(0, -2, 1f))
+            row.setOnClickListener { dlg.dismiss(); startRec(seg, siblings, follow = true) }
+            box.addView(row)
+            Thread {
+                val r = Preview.fromPlayer(this, id, ua)
+                runOnUiThread {
+                    tv.text = "▶ 재생기 따라 저장 (추천)\n${r.text}\n앱 화면에서 방송이 재생 중이어야 해요"
+                    if (!r.ok) tv.setTextColor(Color.parseColor("#C62828"))
+                    r.bitmap?.let { img.setImageBitmap(it) }
+                }
+            }.start()
+        }
         sorted.forEach { c ->
             val row = LinearLayout(this).apply {
                 gravity = Gravity.CENTER_VERTICAL
@@ -371,9 +403,9 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun startRec(c: Captured, siblings: List<Captured>) {
+    private fun startRec(c: Captured, siblings: List<Captured>, follow: Boolean = false) {
         RecordService.status = ""
-        RecordService.start(this, c, web.settings.userAgentString, siblings)
+        RecordService.start(this, c, web.settings.userAgentString, siblings, follow)
         Toast.makeText(this, "녹화를 시작했어요. 화면을 꺼도 계속 저장돼요.", Toast.LENGTH_LONG).show()
         refresh()
     }

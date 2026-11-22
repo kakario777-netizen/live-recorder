@@ -31,6 +31,7 @@ class RecordService : Service() {
         @Volatile var pending: Captured? = null
         @Volatile var pendingUa: String = ""
         @Volatile var pendingSiblings: List<Captured> = emptyList()
+        @Volatile var pendingFollow = false
         @Volatile var running = false
         @Volatile var status = ""
         /** 지금 녹화 중인 방송의 코덱 안내 ("H.265 방송 — 그대로 녹화" 등) */
@@ -49,8 +50,8 @@ class RecordService : Service() {
 
         fun logText(): String = synchronized(log) { log.joinToString("\n") }
 
-        fun start(ctx: Context, c: Captured, ua: String, siblings: List<Captured>) {
-            pending = c; pendingUa = ua; pendingSiblings = siblings
+        fun start(ctx: Context, c: Captured, ua: String, siblings: List<Captured>, follow: Boolean = false) {
+            pending = c; pendingUa = ua; pendingSiblings = siblings; pendingFollow = follow
             ctx.startForegroundService(Intent(ctx, RecordService::class.java))
         }
 
@@ -130,49 +131,53 @@ class RecordService : Service() {
         var path: String? = null
         var lastScan = 0L
         var fileName = ""
-        addLog("주소: ${maskUrl(src.url)}")
-        val rec = HlsRecorder(
-            src, pendingUa,
-            log = { addLog(it) },
-            stopped = { stopFlag },
-            openOut = { ext ->
-                val host = hostOf(src.pageUrl).removePrefix("www.").replace(Regex("[^A-Za-z0-9.-]"), "_")
-                val time = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.KOREA).format(Date())
-                fileName = "${host}_$time.$ext"
-                val (u, pth, out) = Saver.createLive(this, fileName, if (ext == "mp4") "video/mp4" else "video/mp2t")
-                uri = u
-                path = pth
-                addLog("저장 파일: ${Saver.FOLDER}/$fileName" + if (pth == null) " (끝날 때 보임)" else "")
-                out
-            },
-            onCodec = { mime, fromPlaylist ->
-                codecInfo = when {
-                    Codec.isHevc(mime) -> "H.265 방송 — 그대로 녹화"
-                    Codec.isEfficient(mime) -> "${Codec.label(mime)} 방송 — 그대로 녹화 (H.265보다 압축이 좋아 변환 필요 없음)"
-                    mime == null -> "코덱 확인 안 됨 — 녹화 후 파일 목록에서 확인"
-                    else -> "H.265 아님(${Codec.label(mime)}) — 녹화 후 파일 목록에서 H.265 변환 가능"
-                }
-                addLog("코덱: " + Codec.label(mime) + if (fromPlaylist) " (재생목록 정보)" else "")
+        val follow = pendingFollow
+        addLog(if (follow) "방식: 재생기 따라 저장" else "주소: ${maskUrl(src.url)}")
+        val openOut: (String) -> java.io.OutputStream = { ext ->
+            val host = hostOf(src.pageUrl).removePrefix("www.").replace(Regex("[^A-Za-z0-9.-]"), "_")
+            val time = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.KOREA).format(Date())
+            fileName = "${host}_$time.$ext"
+            val (u, pth, out) = Saver.createLive(this, fileName, if (ext == "mp4") "video/mp4" else "video/mp2t")
+            uri = u
+            path = pth
+            addLog("저장 파일: ${Saver.FOLDER}/$fileName" + if (pth == null) " (끝날 때 보임)" else "")
+            out
+        }
+        val onCodec: (String?, Boolean) -> Unit = { mime, fromPlaylist ->
+            codecInfo = when {
+                Codec.isHevc(mime) -> "H.265 방송 — 그대로 녹화"
+                Codec.isEfficient(mime) -> "${Codec.label(mime)} 방송 — 그대로 녹화 (H.265보다 압축이 좋아 변환 필요 없음)"
+                mime == null -> "코덱 확인 안 됨 — 녹화 후 파일 목록에서 확인"
+                else -> "H.265 아님(${Codec.label(mime)}) — 녹화 후 파일 목록에서 H.265 변환 가능"
+            }
+            addLog("코덱: " + Codec.label(mime) + if (fromPlaylist) " (재생목록 정보)" else "")
+            onChange?.invoke()
+        }
+        val probe: (ByteArray, String) -> String? = { data, ext -> Codec.probeBytes(this, data, ext) }
+        val progress: (Long, Int) -> Unit = { bytes, segs ->
+            val now = System.currentTimeMillis()
+            val pth = path
+            if (pth != null && now - lastScan > 60_000) { lastScan = now; Saver.scan(this, pth) }
+            if (now - lastNotify > 3000) {
+                lastNotify = now
+                val min = (now - startedAt) / 60000
+                status = "녹화 중 · ${min}분 · ${bytes / 1024 / 1024}MB · 조각 ${segs}개" + if (codecInfo.isNotEmpty()) "\n$codecInfo" else ""
+                notifyText(status)
                 onChange?.invoke()
-            },
-            probe = { data, ext -> Codec.probeBytes(this, data, ext) },
-            siblings = pendingSiblings,
-            progress = { bytes, segs ->
-                val now = System.currentTimeMillis()
-                val pth = path
-                if (pth != null && now - lastScan > 60_000) { lastScan = now; Saver.scan(this, pth) }
-                if (now - lastNotify > 3000) {
-                    lastNotify = now
-                    val min = (now - startedAt) / 60000
-                    status = "녹화 중 · ${min}분 · ${bytes / 1024 / 1024}MB · 조각 ${segs}개" + if (codecInfo.isNotEmpty()) "\n$codecInfo" else ""
-                    notifyText(status)
-                    onChange?.invoke()
-                }
-            },
-        )
+            }
+        }
+        var totalBytes = 0L
         try {
-            rec.run()
-            addLog("녹화 끝: ${rec.endReason}")
+            if (follow) {
+                val rec = FollowRecorder(Sniff.streamId(src.url), pendingUa, { addLog(it) }, { stopFlag }, openOut, progress, onCodec, probe)
+                try { rec.run() } finally { totalBytes = rec.bytes }
+                addLog("녹화 끝: ${rec.endReason}")
+            } else {
+                val rec = HlsRecorder(src, pendingUa, log = { addLog(it) }, stopped = { stopFlag }, openOut = openOut,
+                    progress = progress, onCodec = onCodec, probe = probe, siblings = pendingSiblings)
+                try { rec.run() } finally { totalBytes = rec.bytes }
+                addLog("녹화 끝: ${rec.endReason}")
+            }
         } catch (e: DrmException) {
             addLog(e.message ?: "DRM")
         } catch (e: Exception) {
@@ -180,9 +185,9 @@ class RecordService : Service() {
         }
         uri?.let { Saver.finish(this, it) }
         path?.let { Saver.scan(this, it) }
-        val mb = rec.bytes / 1024 / 1024
+        val mb = totalBytes / 1024 / 1024
         val codecLine = if (codecInfo.isNotEmpty()) "\n$codecInfo" else ""
-        status = if (rec.bytes > 0) "저장됨: ${Saver.FOLDER}/$fileName (${mb}MB)$codecLine" else "저장된 영상 없음 — 진단 저장을 눌러 보내 주세요"
+        status = if (totalBytes > 0) "저장됨: ${Saver.FOLDER}/$fileName (${mb}MB)$codecLine" else "저장된 영상 없음 — 기록을 눌러 복사해 보내 주세요"
         addLog(status)
         running = false
         try { wake?.release() } catch (_: Exception) {}
