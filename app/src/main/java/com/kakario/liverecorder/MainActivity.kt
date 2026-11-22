@@ -557,23 +557,40 @@ class MainActivity : Activity() {
     /** 녹화 현황: 칸마다 상태와 중지 버튼, 아래에 '이 방송 추가' */
     private fun showSlots() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        val head = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#666666")); setPadding(0, 0, 0, dp(6)) }
         lateinit var dlg: AlertDialog
-        RecordService.list().forEach { sl ->
-            val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(6), 0, dp(6)) }
-            row.addView(TextView(this).apply {
-                text = "${sl.id}. ${sl.streamer.ifEmpty { sl.host }}\n${sl.summary()}"
-                textSize = 13f
-                setTextColor(Color.parseColor("#222222"))
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-            row.addView(btn("중지", Color.parseColor("#D32F2F")) {
-                AlertDialog.Builder(this).setMessage("${sl.id}번 녹화를 멈출까요? 지금까지 녹화한 건 저장돼요.")
-                    .setPositiveButton("중지") { _, _ -> RecordService.stopOne(this, sl.id); dlg.dismiss() }
-                    .setNegativeButton("취소", null).show()
-            })
-            box.addView(row)
+        // 칸마다 글자칸을 기억해 두고 1초마다 내용만 바꿈 (실시간 현황)
+        val rows = HashMap<Int, TextView>()
+        fun build() {
+            box.removeAllViews(); rows.clear()
+            box.addView(head)
+            RecordService.list().forEach { sl ->
+                val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(6), 0, dp(6)) }
+                val tv = TextView(this).apply { textSize = 13f; setTextColor(Color.parseColor("#222222")) }
+                rows[sl.id] = tv
+                row.addView(tv, LinearLayout.LayoutParams(0, -2, 1f))
+                row.addView(btn("중지", Color.parseColor("#D32F2F")) {
+                    AlertDialog.Builder(this).setMessage("${sl.id}번 녹화를 멈출까요? 지금까지 녹화한 건 저장돼요.")
+                        .setPositiveButton("중지") { _, _ -> RecordService.stopOne(this, sl.id) }
+                        .setNegativeButton("취소", null).show()
+                })
+                box.addView(row)
+            }
+            if (rows.isEmpty()) box.addView(TextView(this).apply { text = "녹화 중인 방송이 없어요"; textSize = 14f })
+        }
+        fun update() {
+            val l = RecordService.list()
+            if (l.map { it.id }.toSet() != rows.keys) build()
+            head.text = "받는 중 ${l.count { it.isDownloading }}/${RecordService.MAX_SLOTS} · 등록 ${l.size} · ${RecordService.totalRate() / 1024}KB/s · 합계 ${l.sumOf { it.bytes } / 1024 / 1024}MB"
+            l.forEach { sl -> rows[sl.id]?.text = "${sl.id}. ${sl.streamer.ifEmpty { sl.host }}\n${sl.summary()}" }
+        }
+        build(); update()
+        val ticker = android.os.Handler(mainLooper)
+        val tick = object : Runnable {
+            override fun run() { if (dlg.isShowing) { update(); ticker.postDelayed(this, 1000) } }
         }
         dlg = AlertDialog.Builder(this)
-            .setTitle("녹화 현황 · 받는 중 ${RecordService.list().count { it.isDownloading }}/${RecordService.MAX_SLOTS} · 등록 ${RecordService.list().size}")
+            .setTitle("녹화 현황 (실시간)")
             .setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("이 방송 추가") { _, _ -> addRecording() }
             .setNeutralButton("모두 중지") { _, _ ->
@@ -583,6 +600,8 @@ class MainActivity : Activity() {
             }
             .setNegativeButton("닫기", null)
             .show()
+        dlg.setOnDismissListener { ticker.removeCallbacksAndMessages(null) }
+        ticker.postDelayed(tick, 1000)
     }
 
     /** 지금 보고 있는 방송 페이지를 숨은 재생기로 녹화 추가 */
