@@ -45,12 +45,48 @@ class MainActivity : Activity() {
     private lateinit var web: WebView
     private lateinit var urlBox: EditText
     private lateinit var info: TextView
-    private lateinit var recBtn: Button
+    private lateinit var recLabel: TextView
     private lateinit var loading: ProgressBar
     private val prefs by lazy { getSharedPreferences("main", MODE_PRIVATE) }
     private val updater by lazy { Updater(this) }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    /** 아이콘 + 아래 작은 이름 */
+    private fun iconBtn(icon: Int, label: String, tint: Int = Color.parseColor("#444444"), onClick: () -> Unit): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(0, dp(5), 0, dp(4))
+            isClickable = true
+            setBackgroundResource(android.R.drawable.list_selector_background)
+            setOnClickListener { onClick() }
+            contentDescription = label
+            addView(android.widget.ImageView(this@MainActivity).apply {
+                setImageResource(icon)
+                setColorFilter(tint)
+            }, LinearLayout.LayoutParams(dp(22), dp(22)))
+            addView(TextView(this@MainActivity).apply {
+                text = label; textSize = 10.5f; setTextColor(tint); gravity = Gravity.CENTER
+                isSingleLine = true
+                // 설정 › 아이콘 이름 표시
+                visibility = if (prefs.getBoolean("showLabels", true)) View.VISIBLE else View.GONE
+            }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(2) })
+            if (!prefs.getBoolean("showLabels", true)) setPadding(0, dp(9), 0, dp(9))
+        }
+
+    /** 아이콘만 (주소줄용) */
+    private fun iconOnly(icon: Int, desc: String, onClick: () -> Unit) =
+        android.widget.ImageView(this).apply {
+            setImageResource(icon)
+            setColorFilter(Color.parseColor("#444444"))
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            contentDescription = desc
+            isClickable = true
+            setBackgroundResource(android.R.drawable.list_selector_background)
+            setOnClickListener { onClick() }
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+        }
 
     private fun btn(text: String, color: Int = Color.parseColor("#333333"), onClick: () -> Unit) =
         Button(this).apply {
@@ -85,17 +121,19 @@ class MainActivity : Activity() {
             }
         }
         top.addView(urlBox, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        top.addView(btn("이동") { go() })
-        top.addView(btn("↻") { web.reload() })
+        top.addView(iconOnly(R.drawable.ic_go, "이동") { go() })
+        top.addView(iconOnly(R.drawable.ic_refresh, "새로고침") { web.reload() })
         root.addView(top)
 
         // 둘째 줄: 즐겨찾기 · 설정 · 파일 · 녹화
         val menu = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), 0, dp(4), 0) }
-        menu.addView(btn("즐겨찾기") { showBookmarks() }, LinearLayout.LayoutParams(0, -2, 1f))
-        menu.addView(btn("설정") { showSettingsMenu() }, LinearLayout.LayoutParams(0, -2, 1f))
-        menu.addView(btn("파일") { innerNav = true; startActivity(Intent(this, FilesActivity::class.java)) }, LinearLayout.LayoutParams(0, -2, 1f))
-        recBtn = btn("● 녹화", Color.parseColor("#D32F2F")) { onRecord() }.apply { setTypeface(null, Typeface.BOLD) }
-        menu.addView(recBtn, LinearLayout.LayoutParams(0, -2, 1.2f))
+        menu.addView(iconBtn(R.drawable.ic_star, "즐겨찾기") { showBookmarks() }, LinearLayout.LayoutParams(0, -2, 1f))
+        menu.addView(iconBtn(R.drawable.ic_settings, "설정") { showSettingsMenu() }, LinearLayout.LayoutParams(0, -2, 1f))
+        menu.addView(iconBtn(R.drawable.ic_folder, "파일") { innerNav = true; startActivity(Intent(this, FilesActivity::class.java)) }, LinearLayout.LayoutParams(0, -2, 1f))
+        val rec = iconBtn(R.drawable.ic_rec, "녹화", Color.parseColor("#D32F2F")) { onRecord() }
+        recLabel = rec.getChildAt(1) as TextView
+        recLabel.setTypeface(null, Typeface.BOLD)
+        menu.addView(rec, LinearLayout.LayoutParams(0, -2, 1f))
         root.addView(menu)
 
         // 셋째 줄: 받는 중 현황 한 줄 (누르면 상세)
@@ -122,9 +160,9 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.parseColor("#FAFAFA"))
             setPadding(dp(2), 0, dp(2), 0)
         }
-        nav.addView(btn("◀") { if (web.canGoBack()) web.goBack() }, LinearLayout.LayoutParams(0, -2, 1f))
-        nav.addView(btn("▶") { if (web.canGoForward()) web.goForward() }, LinearLayout.LayoutParams(0, -2, 1f))
-        nav.addView(btn("⌂ 홈") { goHome() }.apply {
+        nav.addView(iconBtn(R.drawable.ic_back, "뒤로") { if (web.canGoBack()) web.goBack() }, LinearLayout.LayoutParams(0, -2, 1f))
+        nav.addView(iconBtn(R.drawable.ic_forward, "앞으로") { if (web.canGoForward()) web.goForward() }, LinearLayout.LayoutParams(0, -2, 1f))
+        nav.addView(iconBtn(R.drawable.ic_home, "홈") { goHome() }.apply {
             setOnLongClickListener {
                 val u = web.url ?: return@setOnLongClickListener true
                 prefs.edit().putString("home", u).apply()
@@ -132,11 +170,12 @@ class MainActivity : Activity() {
                 true
             }
         }, LinearLayout.LayoutParams(0, -2, 1f))
-        nav.addView(btn("⇡ 맨 위") { web.evaluateJavascript("window.scrollTo(0,0)", null); web.scrollTo(0, 0) }, LinearLayout.LayoutParams(0, -2, 1f))
-        tabBtn = btn("탭 1") { showTabs() }
-        nav.addView(tabBtn, LinearLayout.LayoutParams(0, -2, 1f))
-        nav.addView(btn("공유") {
-            val u = web.url ?: return@btn
+        nav.addView(iconBtn(R.drawable.ic_top, "맨 위") { web.evaluateJavascript("window.scrollTo(0,0)", null); web.scrollTo(0, 0) }, LinearLayout.LayoutParams(0, -2, 1f))
+        val tabV = iconBtn(R.drawable.ic_tabs, "탭 1") { showTabs() }
+        tabLabel = tabV.getChildAt(1) as TextView
+        nav.addView(tabV, LinearLayout.LayoutParams(0, -2, 1f))
+        nav.addView(iconBtn(R.drawable.ic_share, "공유") {
+            val u = web.url ?: return@iconBtn
             startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, u), "주소 공유"))
         }, LinearLayout.LayoutParams(0, -2, 1f))
         root.addView(nav)
@@ -328,7 +367,7 @@ class MainActivity : Activity() {
     // ---------- 탭 ----------
 
     private val tabs = ArrayList<WebView>()
-    private lateinit var tabBtn: Button
+    private lateinit var tabLabel: TextView
 
     private fun newTab(url: String?, switchTo: Boolean = true): WebView {
         val w = WebView(this)
@@ -361,7 +400,7 @@ class MainActivity : Activity() {
         updateTabBtn()
     }
 
-    private fun updateTabBtn() { if (::tabBtn.isInitialized) tabBtn.text = "탭 ${tabs.size}" }
+    private fun updateTabBtn() { if (::tabLabel.isInitialized) tabLabel.text = "탭 ${tabs.size}" }
 
     private fun saveTabs() {
         val a = org.json.JSONArray()
@@ -402,7 +441,7 @@ class MainActivity : Activity() {
                 isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
             })
             row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
-            row.addView(btn("✕") { dlg.dismiss(); closeTab(w); showTabs() })
+            row.addView(iconOnly(R.drawable.ic_close, "탭 닫기") { dlg.dismiss(); closeTab(w); showTabs() })
             box.addView(row)
         }
         dlg = AlertDialog.Builder(this)
@@ -446,10 +485,10 @@ class MainActivity : Activity() {
             others > 0 -> "다른 형식 영상 주소 ${others}개 (진단 저장 후 보내 주세요)"
             else -> "방송을 재생하면 영상 주소를 자동으로 찾아요"
         }
-        recBtn.text = when {
+        recLabel.text = when {
             Sync.isRemote(this) -> "담당 폰"
-            RecordService.running -> "녹화 ${RecordService.list().size}개"
-            else -> "● 녹화"
+            RecordService.running -> "녹화 ${RecordService.list().size}"
+            else -> "녹화"
         }
     }
 
@@ -661,16 +700,19 @@ class MainActivity : Activity() {
 
     /** 설정 메뉴: 화질·진단·기록·업데이트 */
     private fun showSettingsMenu() {
-        val items = arrayOf("다운 화질 (사이트별)", "NAS 업로드·폰끼리 동기화", "진단 (문제 생겼을 때)", "녹화 기록 보기", "업데이트 확인")
+        val labels = prefs.getBoolean("showLabels", true)
+        val items = arrayOf("다운 화질 (사이트별)", "NAS 업로드·폰끼리 동기화", "아이콘 이름 표시: " + (if (labels) "켜짐 (누르면 끄기)" else "꺼짐 (누르면 켜기)"),
+            "진단 (문제 생겼을 때)", "녹화 기록 보기", "업데이트 확인")
         AlertDialog.Builder(this)
             .setTitle("설정")
             .setItems(items) { _, i ->
                 when (i) {
                     0 -> showQualitySettings()
                     1 -> { innerNav = true; startActivity(Intent(this, FilesActivity::class.java).putExtra("openFtp", true)) }
-                    2 -> diagnose()
-                    3 -> showLog()
-                    4 -> updater.check(silent = false)
+                    2 -> { prefs.edit().putBoolean("showLabels", !labels).apply(); saveTabs(); recreate() }
+                    3 -> diagnose()
+                    4 -> showLog()
+                    5 -> updater.check(silent = false)
                 }
             }
             .setNegativeButton("닫기", null)

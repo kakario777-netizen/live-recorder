@@ -302,17 +302,17 @@ class FilesActivity : Activity() {
                 }
                 r.onSuccess { dirs ->
                     val items = ArrayList<String>()
-                    if (path != "/") items.add("⬆ 위 폴더로")
-                    items.addAll(dirs.map { "📁 $it" })
+                    if (path != "/") items.add("‹ 위 폴더로")
+                    items.addAll(dirs.map { "› $it" })
                     AlertDialog.Builder(this)
                         .setTitle("지금 위치: $path")
                         .setItems(items.toTypedArray()) { _, i ->
                             val label = items[i]
-                            if (label.startsWith("⬆")) {
+                            if (label.startsWith("‹")) {
                                 val up = path.trimEnd('/').substringBeforeLast('/', "").ifEmpty { "/" }
                                 browseFolder(up, onPick)
                             } else {
-                                val name = label.removePrefix("📁 ")
+                                val name = label.removePrefix("› ")
                                 browseFolder(path.trimEnd('/') + "/" + name, onPick)
                             }
                         }
