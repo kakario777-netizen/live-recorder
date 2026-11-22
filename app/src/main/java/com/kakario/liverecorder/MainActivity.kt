@@ -27,6 +27,9 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
+import android.widget.FrameLayout
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -89,7 +92,9 @@ class MainActivity : Activity() {
         root.addView(loading, LinearLayout.LayoutParams(-1, dp(3)))
 
         web = WebView(this)
-        root.addView(web, LinearLayout.LayoutParams(-1, 0, 1f))
+        webFrame = FrameLayout(this)
+        webFrame.addView(web, FrameLayout.LayoutParams(-1, -1))
+        root.addView(webFrame, LinearLayout.LayoutParams(-1, 0, 1f))
 
         // 아래: 상태 + 버튼
         info = TextView(this).apply {
@@ -134,11 +139,24 @@ class MainActivity : Activity() {
         return Regex("""https?://\S+""").find(t)?.value
     }
 
+    private lateinit var webFrame: FrameLayout
+    private var popup: View? = null
+    private var popupWeb: WebView? = null
+
+    /**
+     * 구글은 앱 속 브라우저(웹뷰) 로그인을 막는다. 브라우저 정보에서 웹뷰 표시('; wv')를 빼고
+     * 앱 이름이 담기는 X-Requested-With 머리말도 끈다.
+     */
+    private val chromeUa: String by lazy {
+        WebSettings.getDefaultUserAgent(this)
+            .replace("; wv)", ")")
+            .replace(Regex("""Version/\d+(\.\d+)* """), "")
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
-    private fun setupWeb() {
-        CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
-        web.settings.apply {
+    private fun configure(w: WebView) {
+        CookieManager.getInstance().setAcceptThirdPartyCookies(w, true)
+        w.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = false
@@ -147,14 +165,85 @@ class MainActivity : Activity() {
             useWideViewPort = true
             builtInZoomControls = true
             displayZoomControls = false
+            javaScriptCanOpenWindowsAutomatically = true
+            setSupportMultipleWindows(true)
+            userAgentString = chromeUa
         }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+            WebSettingsCompat.setRequestedWithHeaderOriginAllowList(w.settings, emptySet())
+        }
+    }
+
+    private fun sniff(req: WebResourceRequest) {
+        val url = req.url.toString()
+        val kind = Sniff.classify(url)
+        if (kind != null) Sniff.add(Captured(url, kind, req.requestHeaders ?: emptyMap(), currentPage))
+    }
+
+    private val chrome = object : WebChromeClient() {
+        override fun onProgressChanged(view: WebView, p: Int) {
+            loading.progress = p
+            loading.visibility = if (p in 1..99) View.VISIBLE else View.GONE
+        }
+
+        // 사이트가 새 창(구글 로그인 등)을 열면 화면 위에 띄운다
+        override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message): Boolean {
+            closePopup()
+            val pw = WebView(this@MainActivity)
+            configure(pw)
+            pw.webChromeClient = this
+            pw.webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(v: WebView, req: WebResourceRequest): WebResourceResponse? { sniff(req); return null }
+                override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean {
+                    val sc = req.url.scheme ?: return true
+                    return sc != "http" && sc != "https"
+                }
+                override fun onPageFinished(v: WebView, url: String) { CookieManager.getInstance().flush() }
+            }
+            val box = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setBackgroundColor(Color.WHITE)
+                isClickable = true
+            }
+            val bar = LinearLayout(this@MainActivity).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setBackgroundColor(Color.parseColor("#F2F2F2"))
+                setPadding(dp(12), 0, dp(4), 0)
+            }
+            bar.addView(TextView(this@MainActivity).apply { text = "로그인 창"; textSize = 14f; setTextColor(Color.parseColor("#333333")) },
+                LinearLayout.LayoutParams(0, -2, 1f))
+            bar.addView(btn("닫기") { closePopup() })
+            box.addView(bar)
+            box.addView(pw, LinearLayout.LayoutParams(-1, 0, 1f))
+            webFrame.addView(box, FrameLayout.LayoutParams(-1, -1))
+            popup = box
+            popupWeb = pw
+            (resultMsg.obj as WebView.WebViewTransport).webView = pw
+            resultMsg.sendToTarget()
+            return true
+        }
+
+        // 로그인이 끝나면 사이트가 창을 스스로 닫는다
+        override fun onCloseWindow(window: WebView) {
+            if (window == popupWeb) closePopup()
+        }
+    }
+
+    private fun closePopup() {
+        val p = popup ?: return
+        webFrame.removeView(p)
+        popupWeb?.destroy()
+        popup = null
+        popupWeb = null
+        CookieManager.getInstance().flush()
+    }
+
+    private fun setupWeb() {
+        CookieManager.getInstance().setAcceptCookie(true)
+        configure(web)
         web.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, req: WebResourceRequest): WebResourceResponse? {
-                val url = req.url.toString()
-                val kind = Sniff.classify(url)
-                if (kind != null) {
-                    Sniff.add(Captured(url, kind, req.requestHeaders ?: emptyMap(), currentPage))
-                }
+                sniff(req)
                 return null
             }
 
@@ -174,12 +263,7 @@ class MainActivity : Activity() {
                 CookieManager.getInstance().flush()
             }
         }
-        web.webChromeClient = object : WebChromeClient() {
-            override fun onProgressChanged(view: WebView, p: Int) {
-                loading.progress = p
-                loading.visibility = if (p in 1..99) View.VISIBLE else View.GONE
-            }
-        }
+        web.webChromeClient = chrome
     }
 
     @Volatile private var currentPage = ""
@@ -305,6 +389,8 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        val pw = popupWeb
+        if (pw != null) { if (pw.canGoBack()) pw.goBack() else closePopup(); return }
         if (web.canGoBack()) web.goBack() else {
             @Suppress("DEPRECATION")
             super.onBackPressed()

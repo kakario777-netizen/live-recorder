@@ -45,4 +45,6 @@ dependencies {
     // 녹화 파일을 폰 하드웨어 인코더로 H.265 변환
     implementation("androidx.media3:media3-transformer:1.5.1")
     implementation("androidx.media3:media3-common:1.5.1")
+    // 구글 로그인 차단 피하기 (앱 이름 머리말 끄기)
+    implementation("androidx.webkit:webkit:1.12.1")
 }
