@@ -377,7 +377,11 @@ class Slot(
                     keep.add(l); i++
                 }
                 val pool = vs.filter { !it.blurred }.ifEmpty { vs }
-                val best = pool.maxByOrNull { it.bw }
+                // 720p 기준: 세로 720 이하 중 가장 좋은 것 → 없으면 720보다 큰 것 중 가장 작은 것
+                fun hOf(v: V) = Regex("""RESOLUTION=\d+x(\d+)""").find(v.inf)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                val upTo720 = pool.filter { hOf(it) in 1..TARGET_HEIGHT }
+                val best = if (upTo720.isNotEmpty()) upTo720.maxByOrNull { it.bw }
+                    else pool.filter { hOf(it) > TARGET_HEIGHT }.minByOrNull { hOf(it) } ?: pool.maxByOrNull { it.bw }
                 if (best != null && vs.size > 1) {
                     text = (keep.filter { it.isNotBlank() } + best.inf + best.uri).joinToString("\n") + "\n"
                     if (!pinnedLogged) {
