@@ -235,6 +235,16 @@ class FilesActivity : Activity() {
         val user = field("아이디", FtpConfig.user(this))
         val pw = field("비밀번호", FtpConfig.password(this), android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD)
         val folder = field("올릴 폴더 (안에 스트리머별 폴더가 생겨요)", FtpConfig.folder(this))
+        box.addView(Button(this).apply {
+            text = "폴더 찾아보기"; isAllCaps = false; textSize = 13f
+            setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#1565C0"))
+            setOnClickListener {
+                // 지금 입력한 서버 정보로 접속해서 폴더를 고른다
+                FtpConfig.save(this@FilesActivity, on.isChecked, host.text.toString(), port.text.toString().toIntOrNull() ?: 21,
+                    user.text.toString(), pw.text.toString(), folder.text.toString().ifBlank { "/녹화" })
+                browseFolder("/") { picked -> folder.setText(picked) }
+            }
+        })
         // 폰끼리 동기화 역할
         box.addView(TextView(this).apply { text = "폰끼리 동기화 (같은 NAS 설정을 쓰는 폰끼리)"; textSize = 12f; setTextColor(Color.parseColor("#666666")); setPadding(0, dp(10), 0, 0) })
         val roles = android.widget.RadioGroup(this)
@@ -275,6 +285,64 @@ class FilesActivity : Activity() {
             Sync.startRecorderService(this)
             render()
         }
+    }
+
+    /** NAS 폴더 찾아보기: 눌러서 들어가고, '이 폴더에 저장'으로 고름 */
+    private fun browseFolder(path: String, onPick: (String) -> Unit) {
+        val loading = Toast.makeText(this, "NAS 폴더 불러오는 중…", Toast.LENGTH_SHORT).apply { show() }
+        Thread {
+            val r = try { Result.success(Uploader.listDirs(this, path)) } catch (e: Exception) { Result.failure(e) }
+            runOnUiThread {
+                loading.cancel()
+                r.onFailure {
+                    AlertDialog.Builder(this).setTitle("NAS에 접속하지 못했어요")
+                        .setMessage("${it.message ?: it.javaClass.simpleName}\n서버 주소·포트·아이디·비밀번호를 확인해 주세요.")
+                        .setPositiveButton("확인", null).show()
+                }
+                r.onSuccess { dirs ->
+                    val items = ArrayList<String>()
+                    if (path != "/") items.add("⬆ 위 폴더로")
+                    items.addAll(dirs.map { "📁 $it" })
+                    AlertDialog.Builder(this)
+                        .setTitle("지금 위치: $path")
+                        .setItems(items.toTypedArray()) { _, i ->
+                            val label = items[i]
+                            if (label.startsWith("⬆")) {
+                                val up = path.trimEnd('/').substringBeforeLast('/', "").ifEmpty { "/" }
+                                browseFolder(up, onPick)
+                            } else {
+                                val name = label.removePrefix("📁 ")
+                                browseFolder(path.trimEnd('/') + "/" + name, onPick)
+                            }
+                        }
+                        .setPositiveButton("이 폴더에 저장") { _, _ ->
+                            onPick(path)
+                            Toast.makeText(this, "저장 폴더: $path", Toast.LENGTH_SHORT).show()
+                        }
+                        .setNeutralButton("새 폴더") { _, _ ->
+                            val input = android.widget.EditText(this).apply { hint = "새 폴더 이름"; isSingleLine = true }
+                            AlertDialog.Builder(this).setTitle("$path 안에 새 폴더")
+                                .setView(LinearLayout(this).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(input, LinearLayout.LayoutParams(-1, -2)) })
+                                .setPositiveButton("만들기") { _, _ ->
+                                    val n = Names.clean(input.text.toString())
+                                    if (n.isEmpty()) { browseFolder(path, onPick); return@setPositiveButton }
+                                    val np = path.trimEnd('/') + "/" + n
+                                    Thread {
+                                        val ok = try { Uploader.makeDir(this, np) } catch (e: Exception) { false }
+                                        runOnUiThread {
+                                            if (!ok) Toast.makeText(this, "폴더를 만들지 못했어요 (권한 확인)", Toast.LENGTH_LONG).show()
+                                            browseFolder(if (ok) np else path, onPick)
+                                        }
+                                    }.start()
+                                }
+                                .setNegativeButton("취소") { _, _ -> browseFolder(path, onPick) }
+                                .show()
+                        }
+                        .setNegativeButton("닫기", null)
+                        .show()
+                }
+            }
+        }.start()
     }
 
     private fun showTrash() {

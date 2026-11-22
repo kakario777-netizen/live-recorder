@@ -207,6 +207,26 @@ object Uploader {
         return f
     }
 
+    /** 폴더 찾아보기: path 안의 하위 폴더 이름들 */
+    fun listDirs(ctx: Context, path: String): List<String> {
+        val f = connect(ctx)
+        try {
+            val dirs = f.listDirectories(if (path.isEmpty()) "/" else path) ?: emptyArray()
+            return dirs.map { it.name.substringAfterLast('/') }.filter { it.isNotEmpty() && it != "." && it != ".." && !it.startsWith("#") && !it.startsWith("@") }.sorted()
+        } finally {
+            try { f.logout() } catch (_: Exception) {}
+            try { f.disconnect() } catch (_: Exception) {}
+        }
+    }
+
+    fun makeDir(ctx: Context, path: String): Boolean {
+        val f = connect(ctx)
+        try { return f.makeDirectory(path) } finally {
+            try { f.logout() } catch (_: Exception) {}
+            try { f.disconnect() } catch (_: Exception) {}
+        }
+    }
+
     /** 설정 화면 '연결 시험' */
     fun test(ctx: Context): String = try {
         val f = connect(ctx)
