@@ -417,6 +417,45 @@ class Slot(
         return o
     }
 
+    // ---------- 티켓방 흐린 화면 따로 저장 ----------
+
+    @Volatile private var blurAt = 0L
+    private var blurOut: OutputStream? = null
+    private var blurPath: String? = null
+    private var blurUri: android.net.Uri? = null
+    private var blurName = ""
+    private var blurTrack: String? = null
+    private var blurBytes = 0L
+
+    private fun writeBlurred(c: Captured, track: String) {
+        if (blurOut == null) {
+            val base = if (fileName.isNotEmpty()) fileName.substringBeforeLast('.') else Names.build(ctx, pageUrl, streamer)
+            blurName = "$base (티켓방 흐림).mp4"
+            val (u, p, o) = Saver.createLive(ctx, blurName, "video/mp4")
+            blurOut = o; blurPath = p; blurUri = u; blurTrack = null; blurBytes = 0
+            log("흐린 화면 파일: $blurName")
+        }
+        val o = blurOut ?: return
+        if (track != blurTrack) {
+            val init = lastInit[track] ?: Sniff.initFor(track) ?: return
+            val h = fetch(init); o.write(h); blurBytes += h.size
+            blurTrack = track
+        }
+        val d = fetch(c); o.write(d); o.flush(); blurBytes += d.size
+    }
+
+    private fun closeBlurred() {
+        val o = blurOut ?: return
+        blurOut = null
+        try { o.flush(); o.close() } catch (_: Exception) {}
+        blurUri?.let { Saver.finish(ctx, it) }
+        blurPath?.let { Saver.scan(ctx, it) }
+        if (blurBytes > 0) {
+            log("흐린 화면 ${blurBytes / 1024 / 1024}MB 따로 저장: $blurName")
+            Tidy.enqueue(ctx, Tidy.Job(blurName, blurPath, blurUri, streamer))
+        }
+    }
+
     /** 조각 이름의 순번(같은 시간대 구분용): 화질 뒤 첫 숫자 덩어리 × 100 + part 번호 */
     private fun seqKey(url: String): Long? {
         val name = url.substringBefore('?').substringAfterLast('/').substringBeforeLast('.')
@@ -455,6 +494,7 @@ class Slot(
                         continue
                     }
                     val idle = now - lastSegAt
+                    if (now - blurAt < 15_000) continue   // 흐린 화면이 계속 오는 중(티켓방) — 새로고침하지 않고 기다림
                     if (idle > STALL_MS) {
                         val everRecorded = recordStartAt > 0
                         val waitingStart = !everRecorded && firstSegAt == 0L
@@ -489,12 +529,22 @@ class Slot(
                 if (streamId != null && sid != streamId) continue
                 val track = Sniff.trackOf(c.url)
                 if (Sniff.isInit(c.url)) { lastInit[track] = c; continue }
+                // 티켓방 흐린 화면(이름에 blurred): 원래 파일엔 넣지 않고 '(티켓방 흐림)' 파일에 따로 저장
+                if (track.contains("blurred", true)) {
+                    blurAt = now
+                    if (pauseKind != "ticket") { pauseKind = "ticket"; log("티켓방 시작(흐린 화면) → 흐린 구간은 따로 저장") }
+                    if (out != null || recordStartAt > 0) setState("일시정지")
+                    try { writeBlurred(c, track) } catch (e: Exception) { log("흐린 화면 저장 실패: ${e.message}") }
+                    cache.remove(key)
+                    continue
+                }
                 val gap = now - lastSegAt
                 // 새 파일: 방송 종료가 확인됐거나, 이유를 모르는데 30분 넘게 끊겼을 때 / 티켓방이면 시간과 상관없이 같은 파일
                 val newBroadcast = out != null && gap > STALL_MS &&
                     (pauseKind == "ended" || (pauseKind == "" && gap > NEW_FILE_AFTER_MS))
                 if (newBroadcast) {
                     log("${gap / 60000}분 만에 방송이 다시 나옴 (" + (if (pauseKind == "ended") "방송 종료 후 재시작" else "오래 끊김") + ") → 새 파일에 녹화")
+                    closeBlurred()
                     closeChat()
                     try { out?.flush(); out?.close() } catch (_: Exception) {}
                     mediaUri?.let { Saver.finish(ctx, it) }
@@ -506,6 +556,7 @@ class Slot(
                 } else if (out != null && gap > STALL_MS) {
                     log("방송이 다시 나옴" + (if (pauseKind == "ticket") " (티켓방 끝남)" else "") + " → 같은 파일에 이어서 녹화")
                 }
+                if (blurOut != null) closeBlurred()
                 if (gap > STALL_MS) pauseKind = ""
                 lastSegAt = now
                 if (firstSegAt == 0L) firstSegAt = now
@@ -601,6 +652,7 @@ class Slot(
                 }
             }
         } finally {
+            closeBlurred()
             closeChat()
             try { out?.flush(); out?.close() } catch (_: Exception) {}
             mediaUri?.let { Saver.finish(ctx, it) }
@@ -619,7 +671,7 @@ class Slot(
     fun summary(): String {
         val min = if (recordStartAt > 0) (System.currentTimeMillis() - recordStartAt) / 60000 else 0
         return when (state) {
-            "일시정지" -> "일시정지 (" + (when (pauseKind) { "ticket" -> "티켓방"; "ended" -> "방송 종료"; else -> "끊김" }) + " · ${(System.currentTimeMillis() - lastSegAt) / 60000}분째) · ${bytes / 1024 / 1024}MB"
+            "일시정지" -> "일시정지 (" + (when (pauseKind) { "ticket" -> if (blurOut != null) "티켓방 · 흐린 화면 따로 저장 중" else "티켓방"; "ended" -> "방송 종료"; else -> "끊김" }) + " · ${(System.currentTimeMillis() - lastSegAt) / 60000}분째) · ${bytes / 1024 / 1024}MB"
             "방송 대기" -> "방송 대기 (켜지면 자동 녹화)"
             "녹화 중" -> "$state · ${min}분 · ${bytes / 1024 / 1024}MB" + (if (quality.isNotEmpty()) " · $quality" else "") +
                 (if (codec.isNotEmpty()) " $codec" else "") + (if (noAudio) " · 소리 없음!" else "") +

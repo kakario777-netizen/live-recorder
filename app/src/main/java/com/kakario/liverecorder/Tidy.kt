@@ -6,7 +6,10 @@ import android.os.Environment
 import android.os.Handler
 import android.os.HandlerThread
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
 import androidx.media3.transformer.Composition
+import androidx.media3.transformer.DefaultEncoderFactory
+import androidx.media3.transformer.VideoEncoderSettings
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
@@ -35,8 +38,18 @@ object Tidy {
     fun busy(): Boolean = current != null || synchronized(queue) { queue.isNotEmpty() }
 
     /** 파일 목록 표시용: 정리 중이면 "정리 중… 37%", 대기 중이면 "정리 대기" */
+    @Volatile var converting = false; private set
+
+    /** H.264로 녹화된 파일은 정리하면서 H.265로 변환 (기본 켜짐, 충전 중일 때만) */
+    fun autoH265(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("autoH265", true)
+
+    private fun charging(ctx: Context): Boolean {
+        val bm = ctx.getSystemService(android.os.BatteryManager::class.java)
+        return bm?.isCharging == true
+    }
+
     fun statusOf(name: String): String? = when {
-        current?.name == name -> "정리 중… $percent%"
+        current?.name == name -> (if (converting) "H.265 변환 중… " else "정리 중… ") + "$percent%"
         synchronized(queue) { queue.any { it.name == name } } -> "정리 대기"
         else -> null
     }
@@ -94,9 +107,31 @@ object Tidy {
         val out = File(workDir, job.name).also { it.delete() }
         val input = job.path?.let { Uri.fromFile(File(it)) } ?: job.uri
         if (input == null) { finish(ctx, job, out, false, "원본을 찾을 수 없어요"); return }
-        RecordService.addLog("정리 시작: ${job.name}")
-        val t = Transformer.Builder(ctx)
-            .setLooper(h.looper)
+        // H.264면 정리하면서 H.265로 변환 (충전 중일 때만, 하드웨어 인코더 있을 때만)
+        val mime = Codec.probeUri(ctx, input)
+        converting = autoH265(ctx) && mime == android.media.MediaFormat.MIMETYPE_VIDEO_AVC && Codec.phoneHasHevcEncoder()
+        if (converting && !charging(ctx)) {
+            converting = false
+            RecordService.addLog("충전 중이 아니라 H.265 변환은 건너뛰고 정리만: ${job.name}")
+        }
+        RecordService.addLog((if (converting) "정리 + H.265 변환 시작: " else "정리 시작: ") + job.name)
+        val tb = Transformer.Builder(ctx).setLooper(h.looper)
+        if (converting) {
+            tb.setVideoMimeType(MimeTypes.VIDEO_H265)
+            val src = job.path?.let { File(it).length() } ?: 0L
+            val bitrate = try {
+                val r = android.media.MediaMetadataRetriever()
+                try {
+                    r.setDataSource(ctx, input)
+                    val ms = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
+                    if (ms > 5000 && src > 0) ((src * 8 * 1000 / ms - 160_000) * 55 / 100).coerceIn(800_000, 8_000_000).toInt() else null
+                } finally { r.release() }
+            } catch (e: Exception) { null }
+            val enc = DefaultEncoderFactory.Builder(ctx).setEnableFallback(true)
+            if (bitrate != null) enc.setRequestedVideoEncoderSettings(VideoEncoderSettings.Builder().setBitrate(bitrate).build())
+            tb.setEncoderFactory(enc.build())
+        }
+        val t = tb
             .addListener(object : Transformer.Listener {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {
                     finish(ctx, job, out, true, "")
@@ -128,9 +163,11 @@ object Tidy {
         var msg: String
         if (ok && out.length() > 0) {
             msg = try {
-                replace(ctx, job, out)
+                val before = job.path?.let { File(it).length() } ?: 0L
+                replace(ctx, job, out, keepOriginalInTrash = converting)
                 markTidied(ctx, job.name)
-                "정리 완료: ${job.name}"
+                if (converting) "정리 + H.265 변환 완료: ${job.name} (${before / 1024 / 1024}MB → ${out.length() / 1024 / 1024}MB, H.264 원본은 휴지통 7일)"
+                else "정리 완료: ${job.name}"
             } catch (e: Exception) {
                 "정리본 저장 실패(원본 유지): ${e.message}"
             }
@@ -143,18 +180,25 @@ object Tidy {
         // 정리가 끝난 파일(실패해도 원본은 쓸 수 있으니) → FTP 자동 업로드
         Uploader.enqueue(ctx, job.name, job.path ?: pathFor(job.name), job.streamer)
         current = null
+        converting = false
         onChange?.invoke()
         handler?.post { next(ctx) }
     }
 
     /** 원래 자리에 완성본으로 바꿔 넣기 */
-    private fun replace(ctx: Context, job: Job, done: File) {
+    private fun replace(ctx: Context, job: Job, done: File, keepOriginalInTrash: Boolean = false) {
         val p = job.path
         if (p != null) {
             val target = File(p)
             val tmp = File(target.parentFile, ".tidy_" + target.name)
             done.inputStream().use { i -> tmp.outputStream().use { o -> i.copyTo(o, 256 * 1024) } }
-            if (!target.delete()) { tmp.delete(); throw Exception("원본을 지울 수 없어요") }
+            if (keepOriginalInTrash) {
+                // 변환 전 H.264 원본은 휴지통으로 (7일 보관)
+                val trash = File(Uploader.trashDir(), target.nameWithoutExtension + " (H.264 원본)." + target.extension)
+                if (trash.exists()) trash.delete()
+                if (!target.renameTo(trash)) { tmp.delete(); throw Exception("원본을 휴지통으로 옮길 수 없어요") }
+                trash.setLastModified(System.currentTimeMillis())
+            } else if (!target.delete()) { tmp.delete(); throw Exception("원본을 지울 수 없어요") }
             if (!tmp.renameTo(target)) throw Exception("이름 바꾸기 실패")
             Saver.scan(ctx, target.absolutePath)
         } else {

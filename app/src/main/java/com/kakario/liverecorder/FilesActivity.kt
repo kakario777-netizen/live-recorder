@@ -63,6 +63,14 @@ class FilesActivity : Activity() {
             setOnCheckedChangeListener { _, b -> prefs.edit().putBoolean("deleteOriginal", b).apply() }
         }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) })
 
+        root.addView(CheckBox(this).apply {
+            text = "H.264 녹화는 정리할 때 H.265로 자동 변환 (충전 중일 때만)"
+            textSize = 13f
+            isChecked = Tidy.autoH265(this@FilesActivity)
+            setPadding(dp(4), 0, 0, 0)
+            setOnCheckedChangeListener { _, b -> prefs.edit().putBoolean("autoH265", b).apply() }
+        }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) })
+
         head = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#666666")); setPadding(dp(14), dp(2), dp(14), dp(6)) }
         root.addView(head)
 
