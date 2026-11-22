@@ -87,10 +87,28 @@ class MainActivity : Activity() {
         top.addView(urlBox, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         top.addView(btn("이동") { go() })
         top.addView(btn("↻") { web.reload() })
-        top.addView(btn("☆") { addBookmark() })
-        top.addView(btn("★") { showBookmarks() })
-        top.addView(btn("⚙") { showQualitySettings() })
         root.addView(top)
+
+        // 둘째 줄: 즐겨찾기 · 설정 · 파일 · 녹화
+        val menu = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), 0, dp(4), 0) }
+        menu.addView(btn("즐겨찾기") { showBookmarks() }, LinearLayout.LayoutParams(0, -2, 1f))
+        menu.addView(btn("설정") { showSettingsMenu() }, LinearLayout.LayoutParams(0, -2, 1f))
+        menu.addView(btn("파일") { innerNav = true; startActivity(Intent(this, FilesActivity::class.java)) }, LinearLayout.LayoutParams(0, -2, 1f))
+        recBtn = btn("● 녹화", Color.parseColor("#D32F2F")) { onRecord() }.apply { setTypeface(null, Typeface.BOLD) }
+        menu.addView(recBtn, LinearLayout.LayoutParams(0, -2, 1.2f))
+        root.addView(menu)
+
+        // 셋째 줄: 받는 중 현황 한 줄 (누르면 상세)
+        info = TextView(this).apply {
+            textSize = 12.5f
+            setTextColor(Color.parseColor("#333333"))
+            setBackgroundColor(Color.parseColor("#F3F3F3"))
+            setPadding(dp(12), dp(5), dp(12), dp(5))
+            isSingleLine = true
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setOnClickListener { onStatusTap() }
+        }
+        root.addView(info, LinearLayout.LayoutParams(-1, -2))
 
         loading = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100; visibility = View.GONE }
         root.addView(loading, LinearLayout.LayoutParams(-1, dp(3)))
@@ -100,21 +118,28 @@ class MainActivity : Activity() {
         webFrame.addView(web, FrameLayout.LayoutParams(-1, -1))
         root.addView(webFrame, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        // 아래: 상태 + 버튼
-        info = TextView(this).apply {
-            textSize = 13f
-            setTextColor(Color.parseColor("#444444"))
-            setPadding(dp(12), dp(6), dp(12), 0)
+        // 맨 아래: 브라우저 버튼 (뒤로 · 앞으로 · 홈 · 맨 위 · 공유)
+        val nav = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(Color.parseColor("#FAFAFA"))
+            setPadding(dp(2), 0, dp(2), 0)
         }
-        root.addView(info)
-        val bottom = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), 0, dp(4), dp(4)) }
-        bottom.addView(btn("진단") { diagnose() }, LinearLayout.LayoutParams(0, -2, 1f))
-        bottom.addView(btn("기록") { showLog() }, LinearLayout.LayoutParams(0, -2, 1f))
-        bottom.addView(btn("업데이트") { updater.check(silent = false) }, LinearLayout.LayoutParams(0, -2, 1f))
-        bottom.addView(btn("파일") { innerNav = true; startActivity(Intent(this, FilesActivity::class.java)) }, LinearLayout.LayoutParams(0, -2, 1f))
-        recBtn = btn("● 녹화", Color.parseColor("#D32F2F")) { onRecord() }.apply { setTypeface(null, Typeface.BOLD) }
-        bottom.addView(recBtn, LinearLayout.LayoutParams(0, -2, 1.3f))
-        root.addView(bottom)
+        nav.addView(btn("◀") { if (web.canGoBack()) web.goBack() }, LinearLayout.LayoutParams(0, -2, 1f))
+        nav.addView(btn("▶") { if (web.canGoForward()) web.goForward() }, LinearLayout.LayoutParams(0, -2, 1f))
+        nav.addView(btn("⌂ 홈") { goHome() }.apply {
+            setOnLongClickListener {
+                val u = web.url ?: return@setOnLongClickListener true
+                prefs.edit().putString("home", u).apply()
+                Toast.makeText(this@MainActivity, "이 페이지를 홈으로 정했어요", Toast.LENGTH_SHORT).show()
+                true
+            }
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        nav.addView(btn("⇡ 맨 위") { web.evaluateJavascript("window.scrollTo(0,0)", null); web.scrollTo(0, 0) }, LinearLayout.LayoutParams(0, -2, 1f))
+        nav.addView(btn("공유") {
+            val u = web.url ?: return@btn
+            startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, u), "주소 공유"))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        root.addView(nav)
 
         setContentView(root)
         root.fitSystemBars()
@@ -315,7 +340,16 @@ class MainActivity : Activity() {
         val n = Sniff.hlsCount()
         val others = Sniff.list().size - n
         info.text = when {
-            RecordService.running -> RecordService.status.ifBlank { "녹화 준비 중…" }
+            Sync.isRemote(this) -> "리모컨 폰 · 누르면 담당 폰 현황"
+            RecordService.running -> {
+                val l = RecordService.list()
+                val rec = l.count { it.state == "녹화 중" }
+                val wait = l.count { it.state == "방송 대기" || it.state == "순서 대기" }
+                val paused = l.count { it.state == "일시정지" }
+                val mb = l.sumOf { it.bytes } / 1024 / 1024
+                "받는 중 ${l.count { it.isDownloading }}/${RecordService.MAX_SLOTS} · 녹화 $rec · 대기 $wait" +
+                    (if (paused > 0) " · 일시정지 $paused" else "") + " · ${RecordService.totalRate() / 1024}KB/s · ${mb}MB  ›"
+            }
             n > 0 || Sniff.latestSegAny() != null -> "영상 찾음 — 녹화를 누르세요"
             others > 0 -> "다른 형식 영상 주소 ${others}개 (진단 저장 후 보내 주세요)"
             else -> "방송을 재생하면 영상 주소를 자동으로 찾아요"
@@ -510,6 +544,47 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    /** 홈: 길게 눌러 정한 페이지, 없으면 마지막으로 연 방송 사이트 첫 화면 */
+    private fun goHome() {
+        val h = prefs.getString("home", null)
+            ?: (web.url ?: prefs.getString("last", null))?.let { u -> "https://" + hostOf(u) }
+        if (h == null) { Toast.makeText(this, "홈이 없어요. 원하는 페이지에서 '홈'을 길게 누르세요.", Toast.LENGTH_LONG).show(); return }
+        urlBox.setText(h); Sniff.clear(); web.loadUrl(h)
+    }
+
+    /** 현황 줄을 눌렀을 때: 녹화 현황 상세 (리모컨 폰이면 담당 폰 현황) */
+    private fun onStatusTap() {
+        when {
+            Sync.isRemote(this) -> showRemoteStatus()
+            RecordService.running -> showSlots()
+            else -> AlertDialog.Builder(this)
+                .setTitle("녹화 현황")
+                .setMessage("지금 녹화 중인 방송이 없어요.\n방송 페이지를 열고 ● 녹화를 누르거나, 즐겨찾기에서 '녹화'를 누르세요." +
+                    (if (RecordService.status.isNotBlank() && RecordService.status != "녹화 없음") "\n\n최근: ${RecordService.status}" else ""))
+                .setPositiveButton("확인", null)
+                .setNeutralButton("기록 보기") { _, _ -> showLog() }
+                .show()
+        }
+    }
+
+    /** 설정 메뉴: 화질·진단·기록·업데이트 */
+    private fun showSettingsMenu() {
+        val items = arrayOf("다운 화질 (사이트별)", "NAS 업로드·폰끼리 동기화", "진단 (문제 생겼을 때)", "녹화 기록 보기", "업데이트 확인")
+        AlertDialog.Builder(this)
+            .setTitle("설정")
+            .setItems(items) { _, i ->
+                when (i) {
+                    0 -> showQualitySettings()
+                    1 -> { innerNav = true; startActivity(Intent(this, FilesActivity::class.java).putExtra("openFtp", true)) }
+                    2 -> diagnose()
+                    3 -> showLog()
+                    4 -> updater.check(silent = false)
+                }
+            }
+            .setNegativeButton("닫기", null)
+            .show()
+    }
+
     /** 설정 › 다운 화질: 사이트마다 최대 화질(1080p / 720p / 480p) 고르기 */
     private fun showQualitySettings() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(4), dp(12), dp(8)) }
@@ -578,7 +653,11 @@ class MainActivity : Activity() {
     private fun showBookmarks() {
         val list = Bookmarks.list(this)
         if (list.isEmpty()) {
-            Toast.makeText(this, "즐겨찾기가 없어요. 방송 페이지에서 ☆를 눌러 추가하세요.", Toast.LENGTH_LONG).show(); return
+            AlertDialog.Builder(this).setTitle("즐겨찾기")
+                .setMessage("아직 즐겨찾기가 없어요. 지금 보고 있는 페이지를 추가할까요?")
+                .setPositiveButton("☆ 지금 페이지 추가") { _, _ -> addBookmark() }
+                .setNegativeButton("닫기", null).show()
+            return
         }
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(4), dp(8), dp(4)) }
         lateinit var dlg: AlertDialog
@@ -622,6 +701,7 @@ class MainActivity : Activity() {
             .setTitle("즐겨찾기 (${list.size})")
             .setMessage("누르면 열기 · 길게 누르면 이름 바꾸기·삭제")
             .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("☆ 지금 페이지 추가") { _, _ -> addBookmark() }
             .setNegativeButton("닫기", null)
             .show()
     }

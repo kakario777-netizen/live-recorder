@@ -80,6 +80,7 @@ class FilesActivity : Activity() {
         root.fitSystemBars()
 
         ConvertService.onChange = { runOnUiThread { render() } }
+        if (intent.getBooleanExtra("openFtp", false)) root.post { ftpSettings() }
         Tidy.onChange = { runOnUiThread { if (Tidy.current == null) reload() else render() } }
         Uploader.onChange = { runOnUiThread { if (Uploader.current == null) reload() else render() } }
     }
