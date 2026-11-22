@@ -157,8 +157,33 @@ class Slot(
         w.loadUrl(pageUrl)
     }
 
+    /** 일시정지 이유: "ticket"(티켓방·비공개) / "ended"(방송 종료) / "" (모름) */
+    @Volatile var pauseKind = ""; private set
+
+    private val endedWords = listOf("offline", "오프라인", "방송 종료", "방송이 종료", "방송 중이 아닙", "is not live", "not streaming", "ended the stream", "will be back", "currently away")
+    private val ticketWords = listOf("ticket", "티켓", "private", "프라이빗", "비공개", "group show", "그룹 쇼", "show in progress", "spy", "pay to watch", "유료")
+
     private fun reloadPlayer() {
         main.post { web?.loadUrl(pageUrl) }
+        // 페이지가 뜬 뒤 화면 글자를 읽어 티켓방인지 방송 종료인지 구분
+        main.postDelayed({ checkPauseKind() }, 8000)
+    }
+
+    private fun checkPauseKind() {
+        val w = web ?: return
+        w.evaluateJavascript("(document.body && document.body.innerText || '').slice(0, 20000)") { raw ->
+            val t = (raw ?: "").lowercase()
+            val kind = when {
+                ticketWords.any { t.contains(it) } && !endedWords.any { t.contains(it) } -> "ticket"
+                endedWords.any { t.contains(it) } -> "ended"
+                else -> ""
+            }
+            if (kind != pauseKind && kind.isNotEmpty() && System.currentTimeMillis() - lastSegAt > STALL_MS) {
+                pauseKind = kind
+                log("일시정지 이유 추정: " + if (kind == "ticket") "티켓방·비공개" else "방송 종료")
+                onUpdate()
+            }
+        }
     }
 
     private fun destroyPlayer() {
@@ -270,16 +295,21 @@ class Slot(
                 if (streamId != null && sid != streamId) continue
                 val track = Sniff.trackOf(c.url)
                 if (Sniff.isInit(c.url)) { lastInit[track] = c; continue }
-                if (out != null && now - lastSegAt > NEW_FILE_AFTER_MS) {
-                    log("${(now - lastSegAt) / 60000}분 만에 방송이 다시 나옴 → 새 방송으로 보고 새 파일에 녹화")
+                val gap = now - lastSegAt
+                // 새 파일: 방송 종료가 확인됐거나, 이유를 모르는데 30분 넘게 끊겼을 때 / 티켓방이면 시간과 상관없이 같은 파일
+                val newBroadcast = out != null && gap > STALL_MS &&
+                    (pauseKind == "ended" || (pauseKind == "" && gap > NEW_FILE_AFTER_MS))
+                if (newBroadcast) {
+                    log("${gap / 60000}분 만에 방송이 다시 나옴 (" + (if (pauseKind == "ended") "방송 종료 후 재시작" else "오래 끊김") + ") → 새 파일에 녹화")
                     try { out?.flush(); out?.close() } catch (_: Exception) {}
                     mediaUri?.let { Saver.finish(ctx, it) }
                     path?.let { Saver.scan(ctx, it) }
                     out = null; mediaUri = null; path = null; curTrack = null
                     bytes = 0; segs = 0; recordStartAt = 0; firstSegAt = 0
-                } else if (out != null && now - lastSegAt > STALL_MS) {
-                    log("방송이 다시 나옴 → 같은 파일에 이어서 녹화")
+                } else if (out != null && gap > STALL_MS) {
+                    log("방송이 다시 나옴" + (if (pauseKind == "ticket") " (티켓방 끝남)" else "") + " → 같은 파일에 이어서 녹화")
                 }
+                if (gap > STALL_MS) pauseKind = ""
                 lastSegAt = now
                 if (firstSegAt == 0L) firstSegAt = now
                 val mp4 = key.endsWith(".mp4")
@@ -341,7 +371,7 @@ class Slot(
     fun summary(): String {
         val min = if (recordStartAt > 0) (System.currentTimeMillis() - recordStartAt) / 60000 else 0
         return when (state) {
-            "일시정지" -> "일시정지 (티켓방·방송 꺼짐 · ${(System.currentTimeMillis() - lastSegAt) / 60000}분째) · ${bytes / 1024 / 1024}MB"
+            "일시정지" -> "일시정지 (" + (when (pauseKind) { "ticket" -> "티켓방"; "ended" -> "방송 종료"; else -> "끊김" }) + " · ${(System.currentTimeMillis() - lastSegAt) / 60000}분째) · ${bytes / 1024 / 1024}MB"
             "방송 대기" -> "방송 대기 (켜지면 자동 녹화)"
             "녹화 중" -> "$state · ${min}분 · ${bytes / 1024 / 1024}MB" + (if (quality.isNotEmpty()) " · $quality" else "") + (if (codec.isNotEmpty()) " $codec" else "")
             else -> state
