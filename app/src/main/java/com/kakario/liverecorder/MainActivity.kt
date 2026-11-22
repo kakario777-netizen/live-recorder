@@ -382,12 +382,46 @@ class MainActivity : Activity() {
             text = "${hostOf(page)}\n화면 불러오는 중…"
         }
         box.addView(tv)
+
+        // 파일 이름: 사이트명 + 스트리머 이름 + 날짜시간 (넣을 부분 고르기, 이름은 고칠 수 있음)
+        val guess = Names.streamerFromUrl(page).ifEmpty { Names.streamerFromTitle(web.title ?: "") }
+        box.addView(TextView(this).apply {
+            text = "파일 이름"; textSize = 13f; setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#222222")); setPadding(0, dp(12), 0, 0)
+        })
+        val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        val cSite = android.widget.CheckBox(this).apply { text = "사이트명"; textSize = 13f; isChecked = Names.useSite(this@MainActivity) }
+        val cName = android.widget.CheckBox(this).apply { text = "스트리머"; textSize = 13f; isChecked = Names.useStreamer(this@MainActivity) }
+        val cTime = android.widget.CheckBox(this).apply { text = "날짜시간"; textSize = 13f; isChecked = Names.useTime(this@MainActivity) }
+        row.addView(cSite); row.addView(cName); row.addView(cTime)
+        box.addView(row)
+        val nameBox = EditText(this).apply {
+            hint = "스트리머 이름"
+            textSize = 14f
+            isSingleLine = true
+            setText(guess)
+        }
+        box.addView(nameBox)
+        val preview = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#666666")) }
+        box.addView(preview)
+        fun updatePreview() {
+            Names.setParts(this, cSite.isChecked, cName.isChecked, cTime.isChecked)
+            preview.text = "예: " + Names.build(this, page, nameBox.text.toString()) + ".mp4"
+        }
+        listOf(cSite, cName, cTime).forEach { it.setOnCheckedChangeListener { _, _ -> updatePreview() } }
+        nameBox.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(e: android.text.Editable?) { updatePreview() }
+        })
+        updatePreview()
+
         val ua = web.settings.userAgentString
         AlertDialog.Builder(this)
             .setTitle("이 방송을 녹화할까요?")
-            .setView(box)
+            .setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("녹화 시작") { _, _ ->
-                RecordService.add(this, page, ua)
+                RecordService.add(this, page, ua, Names.clean(nameBox.text.toString()))
                 Toast.makeText(this, "녹화를 추가했어요. 방송이 꺼져 있으면 켜질 때까지 기다리고, 720p가 잡히면 시작해요. 화면을 꺼도 계속돼요.", Toast.LENGTH_LONG).show()
             }
             .setNegativeButton("취소", null)
@@ -410,7 +444,7 @@ class MainActivity : Activity() {
         if (jobs.isEmpty()) return
         AlertDialog.Builder(this)
             .setTitle("녹화 중이던 방송 ${jobs.size}개가 있어요")
-            .setMessage(jobs.joinToString("\n") { "- " + hostOf(it.first) } + "\n\n이어서 녹화할까요? (새 파일로 저장돼요)")
+            .setMessage(jobs.joinToString("\n") { "- " + it.name.ifEmpty { hostOf(it.url) } } + "\n\n이어서 녹화할까요? (새 파일로 저장돼요)")
             .setPositiveButton("재개") { _, _ -> RecordService.resume(this) }
             .setNegativeButton("안 함") { _, _ -> RecordService.clearSaved(this) }
             .show()

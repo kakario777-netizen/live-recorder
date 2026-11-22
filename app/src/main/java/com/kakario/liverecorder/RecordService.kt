@@ -33,6 +33,7 @@ class RecordService : Service() {
         const val ACTION_ADD = "add"
         const val ACTION_STOP_ONE = "stop_one"
         const val ACTION_RESUME = "resume"
+        const val ACTION_TIDY = "tidy"
         private const val CH = "rec"
         private const val NID = 7
 
@@ -58,9 +59,9 @@ class RecordService : Service() {
 
         fun list(): List<Slot> = synchronized(slots) { slots.toList() }
 
-        fun add(ctx: Context, pageUrl: String, ua: String) {
+        fun add(ctx: Context, pageUrl: String, ua: String, name: String) {
             ctx.startForegroundService(Intent(ctx, RecordService::class.java).setAction(ACTION_ADD)
-                .putExtra("url", pageUrl).putExtra("ua", ua))
+                .putExtra("url", pageUrl).putExtra("ua", ua).putExtra("name", name))
         }
 
         fun stopOne(ctx: Context, id: Int) {
@@ -71,6 +72,15 @@ class RecordService : Service() {
             ctx.startService(Intent(ctx, RecordService::class.java).setAction(ACTION_STOP_ALL))
         }
 
+        /** 파일 목록에서 직접 '정리' 요청 */
+        fun tidy(ctx: Context, name: String, uri: android.net.Uri) {
+            ctx.startForegroundService(Intent(ctx, RecordService::class.java).setAction(ACTION_TIDY)
+                .putExtra("name", name).putExtra("uri", uri.toString()))
+        }
+
+        /** 녹화 중인 파일 이름들 (파일 목록에서 '녹화 중' 표시용) */
+        fun recordingNames(): Set<String> = list().map { it.fileName }.filter { it.isNotEmpty() }.toSet()
+
         fun resume(ctx: Context) {
             ctx.startForegroundService(Intent(ctx, RecordService::class.java).setAction(ACTION_RESUME))
         }
@@ -79,16 +89,18 @@ class RecordService : Service() {
         private fun prefs(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
 
         /** 저장된 '진행 중이던 녹화' (앱·폰이 꺼지기 전) */
-        fun savedJobs(ctx: Context): List<Pair<String, String>> = try {
+        class Job(val url: String, val ua: String, val name: String)
+
+        fun savedJobs(ctx: Context): List<Job> = try {
             val a = JSONArray(prefs(ctx).getString("activeJobs", "[]"))
-            (0 until a.length()).map { val o = a.getJSONObject(it); o.getString("url") to o.optString("ua") }
+            (0 until a.length()).map { val o = a.getJSONObject(it); Job(o.getString("url"), o.optString("ua"), o.optString("name")) }
         } catch (e: Exception) { emptyList() }
 
         fun clearSaved(ctx: Context) = prefs(ctx).edit().remove("activeJobs").apply()
 
         private fun saveJobs(ctx: Context) {
             val a = JSONArray()
-            list().filter { !it.userStopped }.forEach { a.put(JSONObject().put("url", it.pageUrl).put("ua", it.ua)) }
+            list().filter { !it.userStopped }.forEach { a.put(JSONObject().put("url", it.pageUrl).put("ua", it.ua).put("name", it.fixedName)) }
             prefs(ctx).edit().putString("activeJobs", a.toString()).apply()
         }
 
@@ -148,8 +160,9 @@ class RecordService : Service() {
         if (now - lastNotify < 1500) return
         lastNotify = now
         val l = list()
-        status = l.joinToString("\n") { "${it.id}. ${it.host} — ${it.summary()}" }
-        if (l.isNotEmpty()) getSystemService(NotificationManager::class.java).notify(NID, notification(status, true))
+        val tidyLine = Tidy.current?.let { "정리 중… ${Tidy.percent}% — ${it.name}" }
+        status = (l.map { "${it.id}. ${it.host} — ${it.summary()}" } + listOfNotNull(tidyLine)).joinToString("\n")
+        if (l.isNotEmpty() || Tidy.busy()) getSystemService(NotificationManager::class.java).notify(NID, notification(status, true))
         onChange?.invoke()
     }
 
@@ -175,15 +188,15 @@ class RecordService : Service() {
         // 3초마다 알림 갱신
         ticker.removeCallbacksAndMessages(null)
         ticker.post(object : Runnable {
-            override fun run() { lastNotify = 0; updateNotification(); if (running) ticker.postDelayed(this, 3000) }
+            override fun run() { lastNotify = 0; updateNotification(); if (running || Tidy.busy()) ticker.postDelayed(this, 3000) }
         })
     }
 
-    private fun addSlot(url: String, ua: String): Boolean {
+    private fun addSlot(url: String, ua: String, name: String): Boolean {
         synchronized(slots) {
             if (slots.size >= MAX_SLOTS) { addLog("동시 녹화는 최대 ${MAX_SLOTS}개예요"); return false }
             if (slots.any { it.pageUrl == url }) { addLog("이미 녹화 중인 방송이에요"); return false }
-            val s = Slot(this, nextId++, url, ua) { updateNotification() }
+            val s = Slot(this, nextId++, url, ua, name) { updateNotification() }
             slots.add(s)
             s.start()
         }
@@ -209,25 +222,38 @@ class RecordService : Service() {
             }
             ACTION_ADD -> {
                 ensureForeground()
-                addSlot(intent.getStringExtra("url") ?: return START_STICKY, intent.getStringExtra("ua") ?: "")
+                addSlot(intent.getStringExtra("url") ?: return START_STICKY, intent.getStringExtra("ua") ?: "", intent.getStringExtra("name") ?: "")
+            }
+            ACTION_TIDY -> {
+                ensureForeground()
+                val name = intent.getStringExtra("name") ?: return START_STICKY
+                val uri = intent.getStringExtra("uri")?.let { android.net.Uri.parse(it) }
+                Tidy.enqueue(this, Tidy.Job(name, Tidy.pathFor(name), uri))
+                return START_STICKY
             }
             ACTION_RESUME -> {
                 ensureForeground()
-                savedJobs(this).forEach { (u, ua) -> addSlot(u, ua) }
+                savedJobs(this).forEach { addSlot(it.url, it.ua, it.name) }
             }
             null -> {
                 // 시스템이 꺼진 서비스를 다시 살림 → 직접 끈 게 아니므로 이어서 녹화
                 ensureForeground()
                 val jobs = savedJobs(this)
                 if (jobs.isNotEmpty()) addLog("앱이 다시 살아남 → 녹화 ${jobs.size}개 이어서 진행")
-                jobs.forEach { (u, ua) -> addSlot(u, ua) }
+                jobs.forEach { addSlot(it.url, it.ua, it.name) }
             }
         }
-        if (!running && intent?.action != ACTION_ADD) finishService()
+        if (!running && !Tidy.busy() && intent?.action != ACTION_ADD) finishService()
         return START_STICKY
     }
 
     fun finishService() {
+        // 정리 중인 파일이 있으면 끝날 때까지 기다렸다가 종료
+        if (Tidy.busy()) {
+            Tidy.onIdle = { ticker.post { if (!running && !Tidy.busy()) finishService() } }
+            return
+        }
+        Tidy.onIdle = null
         ticker.removeCallbacksAndMessages(null)
         try { wake?.release() } catch (_: Exception) {}
         try { wifi?.release() } catch (_: Exception) {}

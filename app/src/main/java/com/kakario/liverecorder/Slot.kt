@@ -36,6 +36,7 @@ class Slot(
     val id: Int,
     val pageUrl: String,
     val ua: String,
+    val fixedName: String,
     private val onUpdate: () -> Unit,
 ) {
     companion object {
@@ -64,6 +65,9 @@ class Slot(
     val startedAt = System.currentTimeMillis()
     var recordStartAt = 0L; private set
     val host: String = hostOf(pageUrl).removePrefix("www.")
+
+    /** 파일 이름에 쓸 스트리머 이름: 사용자가 정한 이름 → 주소의 이름 부분 → 페이지 제목 */
+    @Volatile var streamer: String = fixedName.ifEmpty { Names.streamerFromUrl(pageUrl) }; private set
 
     private var out: OutputStream? = null
     private var path: String? = null
@@ -115,6 +119,12 @@ class Slot(
                 return s != "http" && s != "https"
             }
             override fun onPageFinished(view: WebView, url: String) {
+                if (streamer.isEmpty()) {
+                    view.evaluateJavascript("document.title") { raw ->
+                        val n = Names.streamerFromTitle((raw ?: "").trim('"'))
+                        if (n.isNotEmpty() && streamer.isEmpty()) { streamer = n; log("스트리머 이름: $n") }
+                    }
+                }
                 // 소리 끄고, 멈춰 있으면 계속 재생 (3초마다)
                 view.evaluateJavascript("""
                     (function(){ if (window.__lrKeep) return; window.__lrKeep = 1;
@@ -249,8 +259,13 @@ class Slot(
     }
 
     private fun openFile(ext: String): OutputStream {
-        val time = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.KOREA).format(Date())
-        fileName = "${host.replace(Regex("[^A-Za-z0-9.-]"), "_")}_$time.$ext"
+        var base = Names.build(ctx, pageUrl, streamer)
+        // 같은 이름이 이미 있으면 (2), (3)…
+        val dir = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), "LiveRecorder")
+        var n = 2
+        val first = base
+        while (java.io.File(dir, "$base.$ext").exists()) { base = "$first ($n)"; n++ }
+        fileName = "$base.$ext"
         val (u, p, o) = Saver.createLive(ctx, fileName, if (ext == "mp4") "video/mp4" else "video/mp2t")
         mediaUri = u; path = p
         log("저장 파일: ${Saver.FOLDER}/$fileName")
@@ -304,6 +319,7 @@ class Slot(
                     try { out?.flush(); out?.close() } catch (_: Exception) {}
                     mediaUri?.let { Saver.finish(ctx, it) }
                     path?.let { Saver.scan(ctx, it) }
+                    if (bytes > 0) Tidy.enqueue(ctx, Tidy.Job(fileName, path, mediaUri))
                     out = null; mediaUri = null; path = null; curTrack = null
                     bytes = 0; segs = 0; recordStartAt = 0; firstSegAt = 0
                 } else if (out != null && gap > STALL_MS) {
@@ -360,6 +376,8 @@ class Slot(
             try { out?.flush(); out?.close() } catch (_: Exception) {}
             mediaUri?.let { Saver.finish(ctx, it) }
             path?.let { Saver.scan(ctx, it) }
+            // 녹화가 끝난 파일은 별도 작업 공간에서 정리(목차 붙이기) 후 완성 처리
+            if (bytes > 0 && out != null) Tidy.enqueue(ctx, Tidy.Job(fileName, path, mediaUri))
             destroyPlayer()
             state = if (bytes > 0) "끝 · ${bytes / 1024 / 1024}MB 저장" else "끝 · 저장된 영상 없음"
             log(state + if (fileName.isNotEmpty()) " ($fileName)" else "")

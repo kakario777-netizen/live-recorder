@@ -61,6 +61,7 @@ class FilesActivity : Activity() {
         root.fitSystemBars()
 
         ConvertService.onChange = { runOnUiThread { render() } }
+        Tidy.onChange = { runOnUiThread { if (Tidy.current == null) reload() else render() } }
     }
 
     override fun onResume() {
@@ -70,6 +71,7 @@ class FilesActivity : Activity() {
 
     override fun onDestroy() {
         ConvertService.onChange = null
+        Tidy.onChange = null
         super.onDestroy()
     }
 
@@ -95,6 +97,7 @@ class FilesActivity : Activity() {
         head.text = buildString {
             append("내 파일 > ${Saver.FOLDER} · ${items.size}개")
             if (!Codec.phoneHasHevcEncoder()) append("\n이 폰에는 H.265 인코더가 없어 변환할 수 없어요")
+            Tidy.current?.let { append("\n정리 중: ${it.name} ${Tidy.percent}%") }
             if (cur != null) append("\n변환 중: ${cur.name} ${ConvertService.percent}%")
             else if (ConvertService.lastResult.isNotBlank()) append("\n최근: ${ConvertService.lastResult}")
         }
@@ -125,6 +128,30 @@ class FilesActivity : Activity() {
                 setTextColor(if (Codec.isEfficient(mime)) Color.parseColor("#2E7D32") else Color.parseColor("#777777"))
             })
             row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+
+            // 녹화 중 / 정리 중… N% / 정리 대기 / 정리 버튼
+            val recording = item.name in RecordService.recordingNames()
+            val tidyState = Tidy.statusOf(item.name)
+            if (recording || tidyState != null) {
+                row.addView(TextView(this).apply {
+                    text = if (recording) "녹화 중" else tidyState
+                    textSize = 13f
+                    setTextColor(Color.parseColor(if (recording) "#D32F2F" else "#1565C0"))
+                    setPadding(dp(8), 0, dp(8), 0)
+                })
+                listBox.addView(row)
+                listBox.addView(android.view.View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")) }, LinearLayout.LayoutParams(-1, 1))
+                return@forEach
+            }
+            if (item.name.lowercase().endsWith(".mp4") && !Tidy.isTidied(this, item.name)) {
+                row.addView(Button(this).apply {
+                    isAllCaps = false; textSize = 13f
+                    setBackgroundColor(Color.TRANSPARENT)
+                    text = "정리"
+                    setTextColor(Color.parseColor("#1565C0"))
+                    setOnClickListener { RecordService.tidy(this@FilesActivity, item.name, item.uri); render() }
+                })
+            }
 
             val busy = ConvertService.isBusy(item.uri)
             if (busy || (mime != null && mime != "?" && !Codec.isEfficient(mime))) {
