@@ -30,6 +30,7 @@ class RecordService : Service() {
 
         @Volatile var pending: Captured? = null
         @Volatile var pendingUa: String = ""
+        @Volatile var pendingSiblings: List<Captured> = emptyList()
         @Volatile var running = false
         @Volatile var status = ""
         /** 지금 녹화 중인 방송의 코덱 안내 ("H.265 방송 — 그대로 녹화" 등) */
@@ -48,8 +49,8 @@ class RecordService : Service() {
 
         fun logText(): String = synchronized(log) { log.joinToString("\n") }
 
-        fun start(ctx: Context, c: Captured, ua: String) {
-            pending = c; pendingUa = ua
+        fun start(ctx: Context, c: Captured, ua: String, siblings: List<Captured>) {
+            pending = c; pendingUa = ua; pendingSiblings = siblings
             ctx.startForegroundService(Intent(ctx, RecordService::class.java))
         }
 
@@ -147,6 +148,7 @@ class RecordService : Service() {
             onCodec = { mime, fromPlaylist ->
                 codecInfo = when {
                     Codec.isHevc(mime) -> "H.265 방송 — 그대로 녹화"
+                    Codec.isEfficient(mime) -> "${Codec.label(mime)} 방송 — 그대로 녹화 (H.265보다 압축이 좋아 변환 필요 없음)"
                     mime == null -> "코덱 확인 안 됨 — 녹화 후 파일 목록에서 확인"
                     else -> "H.265 아님(${Codec.label(mime)}) — 녹화 후 파일 목록에서 H.265 변환 가능"
                 }
@@ -154,6 +156,7 @@ class RecordService : Service() {
                 onChange?.invoke()
             },
             probe = { data, ext -> Codec.probeBytes(this, data, ext) },
+            siblings = pendingSiblings,
             progress = { bytes, segs ->
                 val now = System.currentTimeMillis()
                 val pth = path

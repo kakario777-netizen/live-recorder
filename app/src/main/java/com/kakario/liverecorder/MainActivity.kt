@@ -320,20 +320,60 @@ class MainActivity : Activity() {
             return
         }
         askBattery()
-        if (list.size == 1) { startRec(list[0]); return }
-        val names = list.mapIndexed { i, c ->
-            val path = c.url.substringBefore('?').substringAfterLast('/')
-            (if (i == 0) "(최근) " else "") + "${hostOf(c.url)} · $path"
-        }.toTypedArray()
-        AlertDialog.Builder(this)
+        pickWithThumbnails(list)
+    }
+
+    /** 녹화할 영상 고르기 — 주소마다 실제 화면(썸네일)과 화질·코덱을 보여 준다 */
+    private fun pickWithThumbnails(list: List<Captured>) {
+        val ua = web.settings.userAgentString
+        val siblings = Sniff.list().filter { it.kind == "hls" }
+        // 대표 목록(master)은 뒤로, 같은 종류끼리는 최근 것 먼저
+        val sorted = list.sortedBy { if (it.url.contains("master", true)) 1 else 0 }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(4), dp(8), dp(4)) }
+        lateinit var dlg: AlertDialog
+        sorted.forEach { c ->
+            val row = LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(6), dp(8), dp(6), dp(8))
+                isClickable = true
+                setBackgroundResource(android.R.drawable.list_selector_background)
+            }
+            val img = android.widget.ImageView(this).apply {
+                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                setBackgroundColor(Color.parseColor("#E0E0E0"))
+            }
+            row.addView(img, LinearLayout.LayoutParams(dp(128), dp(72)))
+            val tv = TextView(this).apply {
+                textSize = 13f
+                setTextColor(Color.parseColor("#222222"))
+                setPadding(dp(10), 0, 0, 0)
+                val name = c.url.substringBefore('?').substringAfterLast('/')
+                text = "$name\n화면 불러오는 중…"
+            }
+            row.addView(tv, LinearLayout.LayoutParams(0, -2, 1f))
+            row.setOnClickListener { dlg.dismiss(); startRec(c, siblings) }
+            box.addView(row)
+            Thread {
+                val r = Preview.make(this, c, ua, siblings)
+                runOnUiThread {
+                    val name = c.url.substringBefore('?').substringAfterLast('/')
+                    tv.text = "$name\n${r.text}"
+                    if (!r.ok) tv.setTextColor(Color.parseColor("#C62828"))
+                    r.bitmap?.let { img.setImageBitmap(it) }
+                }
+            }.start()
+        }
+        dlg = AlertDialog.Builder(this)
             .setTitle("어떤 영상을 녹화할까요?")
-            .setItems(names) { _, i -> startRec(list[i]) }
+            .setMessage("화면이 나온 항목을 고르면 돼요")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setNegativeButton("취소", null)
             .show()
     }
 
-    private fun startRec(c: Captured) {
+    private fun startRec(c: Captured, siblings: List<Captured>) {
         RecordService.status = ""
-        RecordService.start(this, c, web.settings.userAgentString)
+        RecordService.start(this, c, web.settings.userAgentString, siblings)
         Toast.makeText(this, "녹화를 시작했어요. 화면을 꺼도 계속 저장돼요.", Toast.LENGTH_LONG).show()
         refresh()
     }

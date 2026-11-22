@@ -38,7 +38,7 @@ class FilesActivity : Activity() {
             text = "녹화 파일"; textSize = 18f; setTypeface(null, Typeface.BOLD); setTextColor(Color.BLACK)
         }, LinearLayout.LayoutParams(0, -2, 1f))
         bar.addView(Button(this).apply {
-            text = "H.265 아닌 것 모두 변환"; isAllCaps = false; textSize = 13f
+            text = "H.265 변환 필요한 것 모두"; isAllCaps = false; textSize = 13f
             setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#D32F2F"))
             setOnClickListener { convertAll() }
         })
@@ -122,12 +122,12 @@ class FilesActivity : Activity() {
             texts.addView(TextView(this).apply {
                 text = "${fmt.format(Date(item.date * 1000))} · ${item.size / 1024 / 1024}MB · $codecText"
                 textSize = 12f
-                setTextColor(if (Codec.isHevc(mime)) Color.parseColor("#2E7D32") else Color.parseColor("#777777"))
+                setTextColor(if (Codec.isEfficient(mime)) Color.parseColor("#2E7D32") else Color.parseColor("#777777"))
             })
             row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
 
             val busy = ConvertService.isBusy(item.uri)
-            if (busy || (mime != null && mime != "?" && !Codec.isHevc(mime))) {
+            if (busy || (mime != null && mime != "?" && !Codec.isEfficient(mime))) {
                 row.addView(Button(this).apply {
                     isAllCaps = false; textSize = 13f
                     setBackgroundColor(Color.TRANSPARENT)
@@ -159,7 +159,7 @@ class FilesActivity : Activity() {
     }
 
     private fun convertAll() {
-        val targets = items.filter { val m = codecOf(it); m != null && m != "?" && !Codec.isHevc(m) && !ConvertService.isBusy(it.uri) }
+        val targets = items.filter { val m = codecOf(it); m != null && m != "?" && !Codec.isEfficient(m) && !ConvertService.isBusy(it.uri) }
         if (targets.isEmpty()) { Toast.makeText(this, "변환할 파일이 없어요", Toast.LENGTH_SHORT).show(); return }
         AlertDialog.Builder(this)
             .setMessage("${targets.size}개를 차례대로 H.265로 변환할까요?")

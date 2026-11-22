@@ -12,11 +12,16 @@ object Codec {
     fun label(mime: String?): String = when (mime) {
         MediaFormat.MIMETYPE_VIDEO_HEVC -> "H.265"
         MediaFormat.MIMETYPE_VIDEO_AVC -> "H.264"
+        MediaFormat.MIMETYPE_VIDEO_AV1 -> "AV1"
+        MediaFormat.MIMETYPE_VIDEO_VP9 -> "VP9"
         null -> "알 수 없음"
         else -> mime.removePrefix("video/").uppercase()
     }
 
     fun isHevc(mime: String?) = mime == MediaFormat.MIMETYPE_VIDEO_HEVC
+
+    /** H.265 이상으로 압축 효율이 좋은 코덱(H.265·AV1) — 다시 H.265로 바꿀 필요 없음 */
+    fun isEfficient(mime: String?) = mime == MediaFormat.MIMETYPE_VIDEO_HEVC || mime == MediaFormat.MIMETYPE_VIDEO_AV1
 
     private fun videoMime(ex: MediaExtractor): String? {
         for (i in 0 until ex.trackCount) {
@@ -52,6 +57,7 @@ object Codec {
         return when {
             c.contains("hvc1") || c.contains("hev1") -> MediaFormat.MIMETYPE_VIDEO_HEVC
             c.contains("avc1") || c.contains("avc3") -> MediaFormat.MIMETYPE_VIDEO_AVC
+            c.contains("av01") -> MediaFormat.MIMETYPE_VIDEO_AV1
             else -> null
         }
     }

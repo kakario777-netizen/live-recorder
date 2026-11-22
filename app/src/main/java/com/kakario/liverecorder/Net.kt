@@ -28,6 +28,7 @@ object Sniff {
             path.endsWith(".flv") -> "flv"
             path.endsWith(".ts") || path.endsWith(".m4s") || path.endsWith(".aac") ||
                 path.endsWith(".m4v") || path.endsWith(".m4a") -> "seg"
+            path.endsWith(".mp4") && Regex("""(part|init|seg|chunk|frag|_\d+)[^/]*\.mp4$""").containsMatchIn(path) -> "seg"
             path.endsWith(".mp4") -> "mp4"
             else -> null
         }
