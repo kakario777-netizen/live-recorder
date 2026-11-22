@@ -279,11 +279,23 @@ object Uploader {
             val fin = remoteSize(f, finalPath)
             if (fin != total) throw Exception("최종 확인 실패 (서버 $fin / 원본 $total)")
             percent = 100
+            // 채팅 파일(.ass 자막, .chat.txt 기록)도 같은 폴더에 올리고 크기 확인
+            companions(src).forEach { cf ->
+                val rp = "$dir/${cf.name}"
+                if (remoteSize(f, rp) != cf.length()) {
+                    cf.inputStream().use { if (!f.storeFile(rp, it)) throw Exception("채팅 파일 올리기 실패: ${cf.name}") }
+                    if (remoteSize(f, rp) != cf.length()) throw Exception("채팅 파일 크기 확인 실패: ${cf.name}")
+                }
+            }
         } finally {
             try { f.logout() } catch (_: Exception) {}
             try { f.disconnect() } catch (_: Exception) {}
         }
-        // 확인 통과 → 원본은 휴지통으로 (7일 보관)
+        // 확인 통과 → 원본(영상·채팅)은 휴지통으로 (7일 보관)
+        companions(src).forEach { cf ->
+            val d = File(trashDir(), cf.name); if (d.exists()) d.delete()
+            if (cf.renameTo(d)) d.setLastModified(System.currentTimeMillis())
+        }
         val dst = File(trashDir(), src.name)
         if (dst.exists()) dst.delete()
         if (src.renameTo(dst)) {
@@ -292,6 +304,12 @@ object Uploader {
         } else {
             RecordService.addLog("휴지통으로 옮기지 못해 원본을 그대로 둬요: ${src.name}")
         }
+    }
+
+    /** 영상과 같이 다니는 채팅 파일 */
+    fun companions(video: File): List<File> {
+        val base = video.absolutePath.substringBeforeLast('.')
+        return listOf(File("$base.ass"), File("$base.chat.txt")).filter { it.exists() }
     }
 
     /** 휴지통에서 7일 지난 파일 삭제 */

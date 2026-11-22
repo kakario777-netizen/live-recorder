@@ -114,7 +114,7 @@ fun maskUrl(url: String): String {
     return "$base?$masked"
 }
 
-class HttpResult(val code: Int, val type: String?, val body: ByteArray, val finalUrl: String)
+class HttpResult(val code: Int, val type: String?, val body: ByteArray, val finalUrl: String, val headers: Map<String, String> = emptyMap())
 
 object Net {
     private val skip = setOf("range", "accept-encoding", "host", "content-length", "connection")
@@ -143,7 +143,9 @@ object Net {
                     if (out.size() > maxBytes) break
                 }
             }
-            return HttpResult(code, conn.contentType, out.toByteArray(), conn.url.toString())
+            val hs = HashMap<String, String>()
+            conn.headerFields?.forEach { (k, v) -> if (k != null && v != null && v.isNotEmpty()) hs[k] = v.joinToString(", ") }
+            return HttpResult(code, conn.contentType, out.toByteArray(), conn.url.toString(), hs)
         } finally {
             conn.disconnect()
         }

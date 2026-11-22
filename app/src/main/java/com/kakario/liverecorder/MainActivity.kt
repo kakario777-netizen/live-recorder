@@ -277,6 +277,12 @@ class MainActivity : Activity() {
                 return s != "http" && s != "https"
             }
 
+            override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
+                // 보는 화면만 죽은 경우: 앱(녹화)은 그대로 두고 화면만 다시 만든다
+                runOnUiThread { recreate() }
+                return true
+            }
+
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                 currentPage = url
                 urlBox.setText(url)
@@ -388,7 +394,7 @@ class MainActivity : Activity() {
         RecordService.list().forEach { sl ->
             val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(6), 0, dp(6)) }
             row.addView(TextView(this).apply {
-                text = "${sl.id}. ${sl.host}\n${sl.summary()}"
+                text = "${sl.id}. ${sl.streamer.ifEmpty { sl.host }}\n${sl.summary()}"
                 textSize = 13f
                 setTextColor(Color.parseColor("#222222"))
             }, LinearLayout.LayoutParams(0, -2, 1f))
@@ -400,7 +406,7 @@ class MainActivity : Activity() {
             box.addView(row)
         }
         dlg = AlertDialog.Builder(this)
-            .setTitle("녹화 현황 (${RecordService.list().size}/${RecordService.MAX_SLOTS})")
+            .setTitle("녹화 현황 · 받는 중 ${RecordService.list().count { it.isDownloading }}/${RecordService.MAX_SLOTS} · 등록 ${RecordService.list().size}")
             .setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("이 방송 추가") { _, _ -> addRecording() }
             .setNeutralButton("모두 중지") { _, _ ->
@@ -419,9 +425,6 @@ class MainActivity : Activity() {
             Toast.makeText(this, "먼저 방송 페이지를 열어 주세요", Toast.LENGTH_LONG).show(); return
         }
         if (Sync.isRemote(this)) { confirmAdd(page); return }
-        if (RecordService.list().size >= RecordService.MAX_SLOTS) {
-            Toast.makeText(this, "동시 녹화는 최대 ${RecordService.MAX_SLOTS}개예요", Toast.LENGTH_LONG).show(); return
-        }
         askBattery()
         if (!Settings.canDrawOverlays(this) && !prefs.getBoolean("askedOverlay2", false)) {
             prefs.edit().putBoolean("askedOverlay2", true).apply()
@@ -559,11 +562,7 @@ class MainActivity : Activity() {
             if (b.url !in recUrls) {
                 row.addView(btn("녹화", Color.parseColor("#D32F2F")) {
                     dlg.dismiss()
-                    if (RecordService.list().size >= RecordService.MAX_SLOTS) {
-                        Toast.makeText(this, "동시 녹화는 최대 ${RecordService.MAX_SLOTS}개예요", Toast.LENGTH_LONG).show()
-                    } else {
-                        requestRecord(b.url, web.settings.userAgentString, Names.clean(b.name))
-                    }
+                    requestRecord(b.url, web.settings.userAgentString, Names.clean(b.name))
                 })
             }
             row.setOnClickListener { dlg.dismiss(); urlBox.setText(b.url); Sniff.clear(); web.loadUrl(b.url) }

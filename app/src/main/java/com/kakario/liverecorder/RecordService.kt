@@ -28,7 +28,19 @@ import java.util.Locale
 class RecordService : Service() {
 
     companion object {
+        /** 동시에 실제로 영상을 받는 최대 개수 (등록·방송 대기는 제한 없음) */
         const val MAX_SLOTS = 10
+        /** 전체 받기 속도 한도: 초당 7.5MB */
+        const val MAX_RATE = 7_500_000L
+
+        /** 새 방송 녹화를 시작해도 되는지: 받는 중 10개 미만 + 속도 여유(한 개 약 0.6MB/s 예상) */
+        fun canStart(s: Slot): Boolean {
+            val others = list().filter { it !== s }
+            if (others.count { it.isDownloading } >= MAX_SLOTS) return false
+            return others.sumOf { it.rateBps() } + 600_000 <= MAX_RATE
+        }
+
+        fun totalRate(): Long = list().sumOf { it.rateBps() }
         const val ACTION_STOP_ALL = "stop_all"
         const val ACTION_ADD = "add"
         const val ACTION_STOP_ONE = "stop_one"
@@ -184,7 +196,8 @@ class RecordService : Service() {
         val l = list()
         val tidyLine = Tidy.current?.let { "정리 중… ${Tidy.percent}% — ${it.name}" }
         val upLine = Uploader.current?.let { "업로드 중… ${Uploader.percent}% — ${it.name}" }
-        status = (l.map { "${it.id}. ${it.host} — ${it.summary()}" } + listOfNotNull(tidyLine, upLine)).joinToString("\n")
+        val head = if (l.isNotEmpty()) "받는 중 ${l.count { it.isDownloading }}/$MAX_SLOTS · 등록 ${l.size}개 · ${totalRate() / 1024}KB/s" else null
+        status = (listOfNotNull(head) + l.map { "${it.id}. ${it.streamer.ifEmpty { it.host }} — ${it.summary()}" } + listOfNotNull(tidyLine, upLine)).joinToString("\n")
         if (l.isEmpty() && !Tidy.busy() && !Uploader.busy() && Sync.isRecorder(this)) status = "녹화 담당 폰 · 원격 명령 대기 중"
         if (l.isNotEmpty() || Tidy.busy() || Uploader.busy() || Sync.isRecorder(this)) getSystemService(NotificationManager::class.java).notify(NID, notification(status, true))
         onChange?.invoke()
@@ -246,7 +259,7 @@ class RecordService : Service() {
 
     private fun addSlot(url: String, ua: String, name: String, resumePath: String? = null): Boolean {
         synchronized(slots) {
-            if (slots.size >= MAX_SLOTS) { addLog("동시 녹화는 최대 ${MAX_SLOTS}개예요"); return false }
+            if (slots.size >= 100) { addLog("등록은 최대 100개까지예요"); return false }
             if (slots.any { it.pageUrl == url }) { addLog("이미 녹화 중인 방송이에요"); return false }
             val s = Slot(this, nextId++, url, ua, name, resumePath) { updateNotification() }
             slots.add(s)
@@ -300,7 +313,11 @@ class RecordService : Service() {
             }
             ACTION_RESUME -> {
                 ensureForeground()
-                if (intent.getStringExtra("why") == "update") addLog("업데이트 완료 → 녹화 자동 재개")
+                when (intent.getStringExtra("why")) {
+                    "update" -> addLog("업데이트 완료 → 녹화 자동 재개")
+                    "crash" -> addLog("앱이 오류로 꺼졌다가 스스로 다시 켜짐 → 녹화 자동 재개 (" +
+                        getSharedPreferences("main", MODE_PRIVATE).getString("lastCrash", "") + ")")
+                }
                 savedJobs(this).forEach { addSlot(it.url, it.ua, it.name, it.path) }
             }
             null -> {
