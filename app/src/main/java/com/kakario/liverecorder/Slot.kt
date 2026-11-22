@@ -37,6 +37,8 @@ class Slot(
     val pageUrl: String,
     val ua: String,
     val fixedName: String,
+    /** 앱이 꺼지기 전에 쓰던 파일 — 최근 것이면 같은 파일에 이어서 녹화 */
+    private val resumePath: String? = null,
     private val onUpdate: () -> Unit,
 ) {
     companion object {
@@ -71,6 +73,8 @@ class Slot(
 
     private var out: OutputStream? = null
     private var path: String? = null
+    /** 지금 쓰는 파일 경로 (이어 녹화용으로 저장) */
+    val currentPath: String? get() = path
     private var mediaUri: android.net.Uri? = null
     private var streamId: String? = null
     private val heightCache = HashMap<String, Int>()
@@ -258,6 +262,16 @@ class Slot(
         return h
     }
 
+    private var appendUsed = false
+
+    /** 쓰던 파일이 있고 10분 안에 마지막으로 쓴 거면 이어 쓰기 */
+    private fun canAppend(): Boolean {
+        if (appendUsed) return false
+        val p = resumePath ?: return false
+        val f = java.io.File(p)
+        return f.exists() && f.length() > 0 && System.currentTimeMillis() - f.lastModified() < 10 * 60_000L
+    }
+
     private fun openFile(ext: String): OutputStream {
         var base = Names.build(ctx, pageUrl, streamer)
         // 같은 이름이 이미 있으면 (2), (3)…
@@ -339,6 +353,19 @@ class Slot(
                     val h = if (!mp4) 0 else heightCache[track]
                         ?: heightOf(track, head ?: lastInit[track]?.let { runCatching { fetch(it) }.getOrNull() })
                     // 시작 전: 720p 이상이 나올 때까지 기다림 (1분 넘으면 그때 화질로 시작)
+                    if (out == null && canAppend()) {
+                        // 업데이트·강제 종료 직후: 쓰던 파일에 그대로 이어서 (720 대기 없이)
+                        val f = java.io.File(resumePath!!)
+                        out = java.io.FileOutputStream(f, true).buffered(256 * 1024)
+                        path = f.absolutePath
+                        fileName = f.name
+                        bytes = f.length()
+                        recordStartAt = now
+                        appendUsed = true
+                        log("앱이 다시 켜져서 같은 파일에 이어서 녹화: $fileName")
+                        RecordService.fileOpened()
+                        if (head == null && mp4) head = lastInit[track]?.let { fetch(it) }
+                    }
                     if (out == null) {
                         val waited = now - firstSegAt
                         if (h in 1 until TARGET_HEIGHT && waited < WAIT_HQ_MS) {
@@ -348,6 +375,7 @@ class Slot(
                         if (h in 1 until TARGET_HEIGHT) log("1분 동안 720p가 안 잡혀 ${h}p로 녹화 시작")
                         out = openFile(if (mp4) "mp4" else "ts")
                         recordStartAt = now
+                        RecordService.fileOpened()
                         if (head == null && mp4) head = lastInit[track]?.let { fetch(it) }
                     }
                     val o = out ?: continue

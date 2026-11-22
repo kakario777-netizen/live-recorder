@@ -111,9 +111,10 @@ class Updater(private val a: Activity) {
                     .setTitle("새 버전 준비됨 (빌드 ${myBuild()} → ${r.build})")
                     .setMessage((if (notes.isNotBlank()) "$notes\n\n" else "") +
                         "지금 업데이트하면 앱이 잠깐 껐다 켜져요.\n'나중에'를 누르면 앱을 나갈 때 알아서 업데이트해요." +
-                        if (working()) "\n\n지금은 녹화·변환 중이라, 끝난 뒤에 업데이트돼요." else "")
+                        if (RecordService.running) "\n\n녹화 중이에요. 업데이트하면 녹화가 10~30초 끊겼다가 같은 파일에 자동으로 이어져요." else "")
                     .setPositiveButton("지금 업데이트") { _, _ ->
-                        if (working()) toast("녹화·변환이 끝나면 업데이트할게요") else install(f, relaunch = true)
+                        if (ConvertService.current != null || Tidy.busy()) toast("변환·정리가 끝나면 업데이트할게요")
+                        else install(f, relaunch = !RecordService.running)
                     }
                     .setNegativeButton("나중에", null)
                     .show()
@@ -197,11 +198,13 @@ class InstallResultReceiver : BroadcastReceiver() {
     }
 }
 
-/** 업데이트가 끝나면 '지금 업데이트'를 눌렀을 때만 앱을 다시 연다 */
+/** 업데이트가 끝나면: 녹화는 자동 재개, 앱 화면은 '지금 업데이트'를 눌렀을 때만 다시 연다 */
 class UpdatedReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val p = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
+        // 녹화 중이던 게 있으면 묻지 않고 바로 이어서 녹화
+        try { RecordService.resumeAfterUpdate(ctx) } catch (_: Exception) {}
         if (!p.getBoolean("relaunchAfterUpdate", false)) return
         p.edit().putBoolean("relaunchAfterUpdate", false).apply()
         val open = Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

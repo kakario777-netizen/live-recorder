@@ -89,19 +89,28 @@ class RecordService : Service() {
         private fun prefs(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
 
         /** 저장된 '진행 중이던 녹화' (앱·폰이 꺼지기 전) */
-        class Job(val url: String, val ua: String, val name: String)
+        class Job(val url: String, val ua: String, val name: String, val path: String?)
 
         fun savedJobs(ctx: Context): List<Job> = try {
             val a = JSONArray(prefs(ctx).getString("activeJobs", "[]"))
-            (0 until a.length()).map { val o = a.getJSONObject(it); Job(o.getString("url"), o.optString("ua"), o.optString("name")) }
+            (0 until a.length()).map { val o = a.getJSONObject(it); Job(o.getString("url"), o.optString("ua"), o.optString("name"), o.optString("path").ifEmpty { null }) }
         } catch (e: Exception) { emptyList() }
 
         fun clearSaved(ctx: Context) = prefs(ctx).edit().remove("activeJobs").apply()
 
         private fun saveJobs(ctx: Context) {
             val a = JSONArray()
-            list().filter { !it.userStopped }.forEach { a.put(JSONObject().put("url", it.pageUrl).put("ua", it.ua).put("name", it.fixedName)) }
+            list().filter { !it.userStopped }.forEach { a.put(JSONObject().put("url", it.pageUrl).put("ua", it.ua).put("name", it.fixedName).put("path", it.currentPath ?: "")) }
             prefs(ctx).edit().putString("activeJobs", a.toString()).apply()
+        }
+
+        /** 녹화 파일을 새로 열었을 때: 이어 녹화용으로 경로 저장 */
+        fun fileOpened() { instance?.let { saveJobs(it) } }
+
+        /** 업데이트 직후: 묻지 않고 바로 재개 */
+        fun resumeAfterUpdate(ctx: Context) {
+            if (savedJobs(ctx).isEmpty()) return
+            ctx.startForegroundService(Intent(ctx, RecordService::class.java).setAction(ACTION_RESUME).putExtra("why", "update"))
         }
 
         fun slotEnded(s: Slot) {
@@ -192,11 +201,11 @@ class RecordService : Service() {
         })
     }
 
-    private fun addSlot(url: String, ua: String, name: String): Boolean {
+    private fun addSlot(url: String, ua: String, name: String, resumePath: String? = null): Boolean {
         synchronized(slots) {
             if (slots.size >= MAX_SLOTS) { addLog("동시 녹화는 최대 ${MAX_SLOTS}개예요"); return false }
             if (slots.any { it.pageUrl == url }) { addLog("이미 녹화 중인 방송이에요"); return false }
-            val s = Slot(this, nextId++, url, ua, name) { updateNotification() }
+            val s = Slot(this, nextId++, url, ua, name, resumePath) { updateNotification() }
             slots.add(s)
             s.start()
         }
@@ -233,14 +242,15 @@ class RecordService : Service() {
             }
             ACTION_RESUME -> {
                 ensureForeground()
-                savedJobs(this).forEach { addSlot(it.url, it.ua, it.name) }
+                if (intent.getStringExtra("why") == "update") addLog("업데이트 완료 → 녹화 자동 재개")
+                savedJobs(this).forEach { addSlot(it.url, it.ua, it.name, it.path) }
             }
             null -> {
                 // 시스템이 꺼진 서비스를 다시 살림 → 직접 끈 게 아니므로 이어서 녹화
                 ensureForeground()
                 val jobs = savedJobs(this)
                 if (jobs.isNotEmpty()) addLog("앱이 다시 살아남 → 녹화 ${jobs.size}개 이어서 진행")
-                jobs.forEach { addSlot(it.url, it.ua, it.name) }
+                jobs.forEach { addSlot(it.url, it.ua, it.name, it.path) }
             }
         }
         if (!running && !Tidy.busy() && intent?.action != ACTION_ADD) finishService()
