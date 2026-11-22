@@ -223,8 +223,9 @@ object Library {
             android.provider.MediaStore.MediaColumns.SIZE,
             android.provider.MediaStore.MediaColumns.DATE_MODIFIED,
         )
-        val sel = "${android.provider.MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${android.provider.MediaStore.MediaColumns.IS_PENDING} = 0"
-        ctx.contentResolver.query(col, proj, sel, arrayOf("${Saver.FOLDER}%"),
+        // 휴지통 같은 하위 폴더는 빼고 녹화 폴더 바로 안의 파일만
+        val sel = "${android.provider.MediaStore.MediaColumns.RELATIVE_PATH} = ? AND ${android.provider.MediaStore.MediaColumns.IS_PENDING} = 0"
+        ctx.contentResolver.query(col, proj, sel, arrayOf("${Saver.FOLDER}/"),
             "${android.provider.MediaStore.MediaColumns.DATE_MODIFIED} DESC")?.use { c ->
             while (c.moveToNext()) {
                 val name = c.getString(1) ?: continue

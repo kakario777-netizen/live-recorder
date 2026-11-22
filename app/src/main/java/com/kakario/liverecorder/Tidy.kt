@@ -19,7 +19,7 @@ import java.io.File
  * 앱 전용 작업 공간에서 만든 뒤, 성공하면 원래 파일 자리에 완성본으로 바꿔 넣는다.
  */
 object Tidy {
-    class Job(val name: String, val path: String?, val uri: Uri?)
+    class Job(val name: String, val path: String?, val uri: Uri?, val streamer: String = "")
 
     private val queue = ArrayDeque<Job>()
     @Volatile var current: Job? = null; private set
@@ -59,7 +59,11 @@ object Tidy {
     }
 
     fun enqueue(ctx: Context, job: Job) {
-        if (!job.name.lowercase().endsWith(".mp4")) return  // .ts는 목차 없이도 잘 재생돼 정리 안 함
+        if (!job.name.lowercase().endsWith(".mp4")) {
+            // .ts는 목차 없이도 잘 재생돼 정리 없이 바로 업로드
+            Uploader.enqueue(ctx, job.name, job.path, job.streamer)
+            return
+        }
         val app = ctx.applicationContext
         synchronized(queue) {
             if (current?.name == job.name || queue.any { it.name == job.name }) return
@@ -136,6 +140,8 @@ object Tidy {
         out.delete()
         lastResult = msg
         RecordService.addLog(msg)
+        // 정리가 끝난 파일(실패해도 원본은 쓸 수 있으니) → FTP 자동 업로드
+        Uploader.enqueue(ctx, job.name, job.path ?: pathFor(job.name), job.streamer)
         current = null
         onChange?.invoke()
         handler?.post { next(ctx) }

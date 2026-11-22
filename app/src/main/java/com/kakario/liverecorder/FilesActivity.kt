@@ -38,11 +38,22 @@ class FilesActivity : Activity() {
             text = "녹화 파일"; textSize = 18f; setTypeface(null, Typeface.BOLD); setTextColor(Color.BLACK)
         }, LinearLayout.LayoutParams(0, -2, 1f))
         bar.addView(Button(this).apply {
-            text = "H.265 변환 필요한 것 모두"; isAllCaps = false; textSize = 13f
-            setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#D32F2F"))
-            setOnClickListener { convertAll() }
+            text = "NAS 업로드 설정"; isAllCaps = false; textSize = 13f
+            setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#1565C0"))
+            setOnClickListener { ftpSettings() }
+        })
+        bar.addView(Button(this).apply {
+            text = "휴지통"; isAllCaps = false; textSize = 13f
+            setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#555555"))
+            setOnClickListener { showTrash() }
         })
         root.addView(bar)
+        root.addView(Button(this).apply {
+            text = "H.265 변환 필요한 것 모두"; isAllCaps = false; textSize = 13f
+            setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#D32F2F"))
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setOnClickListener { convertAll() }
+        })
 
         root.addView(CheckBox(this).apply {
             text = "변환 성공하면 원본 삭제"
@@ -62,6 +73,7 @@ class FilesActivity : Activity() {
 
         ConvertService.onChange = { runOnUiThread { render() } }
         Tidy.onChange = { runOnUiThread { if (Tidy.current == null) reload() else render() } }
+        Uploader.onChange = { runOnUiThread { if (Uploader.current == null) reload() else render() } }
     }
 
     override fun onResume() {
@@ -72,6 +84,7 @@ class FilesActivity : Activity() {
     override fun onDestroy() {
         ConvertService.onChange = null
         Tidy.onChange = null
+        Uploader.onChange = null
         super.onDestroy()
     }
 
@@ -98,6 +111,12 @@ class FilesActivity : Activity() {
             append("내 파일 > ${Saver.FOLDER} · ${items.size}개")
             if (!Codec.phoneHasHevcEncoder()) append("\n이 폰에는 H.265 인코더가 없어 변환할 수 없어요")
             Tidy.current?.let { append("\n정리 중: ${it.name} ${Tidy.percent}%") }
+            if (FtpConfig.ready(this@FilesActivity)) {
+                append("\nNAS 자동 업로드 켜짐 · 대기 ${Uploader.pendingCount(this@FilesActivity)}개")
+                Uploader.current?.let { append(" · 업로드 중: ${it.name} ${Uploader.percent}%") }
+                if (Uploader.lastResult.isNotBlank()) append("\n최근: ${Uploader.lastResult}")
+            } else append("\nNAS 자동 업로드 꺼짐")
+            append(" · 휴지통 ${Uploader.trashFiles().size}개 (${Uploader.TRASH_DAYS}일 뒤 자동 삭제)")
             if (cur != null) append("\n변환 중: ${cur.name} ${ConvertService.percent}%")
             else if (ConvertService.lastResult.isNotBlank()) append("\n최근: ${ConvertService.lastResult}")
         }
@@ -131,7 +150,7 @@ class FilesActivity : Activity() {
 
             // 녹화 중 / 정리 중… N% / 정리 대기 / 정리 버튼
             val recording = item.name in RecordService.recordingNames()
-            val tidyState = Tidy.statusOf(item.name)
+            val tidyState = Tidy.statusOf(item.name) ?: Uploader.statusOf(item.name)
             if (recording || tidyState != null) {
                 row.addView(TextView(this).apply {
                     text = if (recording) "녹화 중" else tidyState
@@ -142,6 +161,19 @@ class FilesActivity : Activity() {
                 listBox.addView(row)
                 listBox.addView(android.view.View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")) }, LinearLayout.LayoutParams(-1, 1))
                 return@forEach
+            }
+            if (FtpConfig.ready(this) && (Tidy.isTidied(this, item.name) || !item.name.lowercase().endsWith(".mp4"))) {
+                row.addView(Button(this).apply {
+                    isAllCaps = false; textSize = 13f
+                    setBackgroundColor(Color.TRANSPARENT)
+                    text = "업로드"
+                    setTextColor(Color.parseColor("#2E7D32"))
+                    setOnClickListener {
+                        val p = Tidy.pathFor(item.name)
+                        if (p == null) Toast.makeText(this@FilesActivity, "이 파일은 직접 경로를 찾을 수 없어 올릴 수 없어요", Toast.LENGTH_SHORT).show()
+                        else { RecordService.uploadOne(this@FilesActivity, item.name, p, guessStreamer(item.name)); render() }
+                    }
+                })
             }
             if (item.name.lowercase().endsWith(".mp4") && !Tidy.isTidied(this, item.name)) {
                 row.addView(Button(this).apply {
@@ -171,6 +203,80 @@ class FilesActivity : Activity() {
             listBox.addView(row)
             listBox.addView(android.view.View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")) }, LinearLayout.LayoutParams(-1, 1))
         }
+    }
+
+    /** 파일 이름 "사이트 스트리머 날짜 시간"에서 스트리머 추정 (직접 올릴 때 폴더용) */
+    private fun guessStreamer(name: String): String {
+        val parts = name.substringBeforeLast('.').split(' ').filter { it.isNotEmpty() && !it.all { c -> c.isDigit() } && !it.startsWith("(") }
+        return when {
+            parts.size >= 2 -> parts[1]
+            parts.size == 1 -> parts[0]
+            else -> ""
+        }
+    }
+
+    private fun ftpSettings() {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
+        fun field(hint: String, value: String, type: Int = android.text.InputType.TYPE_CLASS_TEXT) = android.widget.EditText(this).apply {
+            this.hint = hint; setText(value); isSingleLine = true; inputType = type; textSize = 14f
+        }.also { box.addView(TextView(this).apply { text = hint; textSize = 12f; setTextColor(Color.parseColor("#666666")); setPadding(0, dp(6), 0, 0) }); box.addView(it) }
+        val on = CheckBox(this).apply { text = "녹화가 끝나면 NAS에 자동 업로드"; isChecked = FtpConfig.enabled(this@FilesActivity) }
+        box.addView(on)
+        val host = field("서버 주소 (예: 192.168.0.10 또는 내이름.synology.me)", FtpConfig.host(this))
+        val port = field("포트", FtpConfig.port(this).toString(), android.text.InputType.TYPE_CLASS_NUMBER)
+        val user = field("아이디", FtpConfig.user(this))
+        val pw = field("비밀번호", FtpConfig.password(this), android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        val folder = field("올릴 폴더 (안에 스트리머별 폴더가 생겨요)", FtpConfig.folder(this))
+        val result = TextView(this).apply { textSize = 12f; setPadding(0, dp(8), 0, dp(4)) }
+        box.addView(result)
+        fun save() = FtpConfig.save(this, on.isChecked, host.text.toString(), port.text.toString().toIntOrNull() ?: 21,
+            user.text.toString(), pw.text.toString(), folder.text.toString().ifBlank { "/녹화" })
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("NAS(FTP) 업로드 설정")
+            .setView(android.widget.ScrollView(this).apply { addView(box) })
+            .setPositiveButton("저장", null)
+            .setNeutralButton("연결 시험", null)
+            .setNegativeButton("취소", null)
+            .show()
+        dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+            save()
+            result.text = "연결하는 중…"
+            Thread {
+                val r = Uploader.test(this)
+                runOnUiThread { result.text = r; result.setTextColor(Color.parseColor(if (r.startsWith("연결 성공")) "#2E7D32" else "#C62828")) }
+            }.start()
+        }
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            save()
+            dlg.dismiss()
+            Toast.makeText(this, if (on.isChecked) "저장했어요. 녹화가 끝난 파일은 NAS에 자동으로 올라가요." else "저장했어요 (자동 업로드 꺼짐)", Toast.LENGTH_LONG).show()
+            RecordService.startUploads(this)
+            render()
+        }
+    }
+
+    private fun showTrash() {
+        val files = Uploader.trashFiles()
+        if (files.isEmpty()) { Toast.makeText(this, "휴지통이 비어 있어요", Toast.LENGTH_SHORT).show(); return }
+        val fmt = SimpleDateFormat("MM/dd HH:mm", Locale.KOREA)
+        val names = files.map {
+            val left = Uploader.TRASH_DAYS - ((System.currentTimeMillis() - it.lastModified()) / (24 * 3600_000L)).toInt()
+            "${it.name}\n${it.length() / 1024 / 1024}MB · ${fmt.format(Date(it.lastModified()))} 업로드 · ${left}일 뒤 삭제"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("휴지통 (NAS 업로드 확인 끝난 원본)")
+            .setItems(names) { _, i ->
+                val f = files[i]
+                AlertDialog.Builder(this).setMessage(f.name)
+                    .setPositiveButton("되살리기") { _, _ ->
+                        val back = java.io.File(Uploader.recDir(), f.name)
+                        if (f.renameTo(back)) { Saver.scan(this, back.absolutePath); Toast.makeText(this, "녹화 폴더로 되살렸어요", Toast.LENGTH_SHORT).show(); reload() }
+                    }
+                    .setNeutralButton("지금 삭제") { _, _ -> f.delete(); Toast.makeText(this, "삭제했어요", Toast.LENGTH_SHORT).show() }
+                    .setNegativeButton("닫기", null).show()
+            }
+            .setNegativeButton("닫기", null)
+            .show()
     }
 
     private fun convert(list: List<Library.Item>) {

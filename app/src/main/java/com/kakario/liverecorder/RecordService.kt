@@ -34,6 +34,18 @@ class RecordService : Service() {
         const val ACTION_STOP_ONE = "stop_one"
         const val ACTION_RESUME = "resume"
         const val ACTION_TIDY = "tidy"
+        const val ACTION_UPLOAD = "upload"
+
+        /** 남은 업로드 처리 시작 (설정 저장 후, 앱 켤 때 등) */
+        fun startUploads(ctx: Context) {
+            if (!FtpConfig.ready(ctx) || Uploader.pendingCount(ctx) == 0) return
+            ctx.startForegroundService(Intent(ctx, RecordService::class.java).setAction(ACTION_UPLOAD))
+        }
+
+        fun uploadOne(ctx: Context, name: String, path: String, streamer: String) {
+            ctx.startForegroundService(Intent(ctx, RecordService::class.java).setAction(ACTION_UPLOAD)
+                .putExtra("name", name).putExtra("path", path).putExtra("streamer", streamer))
+        }
         private const val CH = "rec"
         private const val NID = 7
 
@@ -170,8 +182,9 @@ class RecordService : Service() {
         lastNotify = now
         val l = list()
         val tidyLine = Tidy.current?.let { "정리 중… ${Tidy.percent}% — ${it.name}" }
-        status = (l.map { "${it.id}. ${it.host} — ${it.summary()}" } + listOfNotNull(tidyLine)).joinToString("\n")
-        if (l.isNotEmpty() || Tidy.busy()) getSystemService(NotificationManager::class.java).notify(NID, notification(status, true))
+        val upLine = Uploader.current?.let { "업로드 중… ${Uploader.percent}% — ${it.name}" }
+        status = (l.map { "${it.id}. ${it.host} — ${it.summary()}" } + listOfNotNull(tidyLine, upLine)).joinToString("\n")
+        if (l.isNotEmpty() || Tidy.busy() || Uploader.busy()) getSystemService(NotificationManager::class.java).notify(NID, notification(status, true))
         onChange?.invoke()
     }
 
@@ -197,7 +210,7 @@ class RecordService : Service() {
         // 3초마다 알림 갱신
         ticker.removeCallbacksAndMessages(null)
         ticker.post(object : Runnable {
-            override fun run() { lastNotify = 0; updateNotification(); if (running || Tidy.busy()) ticker.postDelayed(this, 3000) }
+            override fun run() { lastNotify = 0; updateNotification(); if (running || Tidy.busy() || Uploader.busy()) ticker.postDelayed(this, 3000) }
         })
     }
 
@@ -216,6 +229,7 @@ class RecordService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         shuttingDown = false
+        try { Uploader.cleanTrash() } catch (_: Exception) {}
         when (intent?.action) {
             ACTION_STOP_ALL -> {
                 list().forEach { it.stop() }
@@ -232,6 +246,15 @@ class RecordService : Service() {
             ACTION_ADD -> {
                 ensureForeground()
                 addSlot(intent.getStringExtra("url") ?: return START_STICKY, intent.getStringExtra("ua") ?: "", intent.getStringExtra("name") ?: "")
+            }
+            ACTION_UPLOAD -> {
+                ensureForeground()
+                val name = intent.getStringExtra("name")
+                val path = intent.getStringExtra("path")
+                if (name != null && path != null) Uploader.enqueue(this, name, path, intent.getStringExtra("streamer") ?: "")
+                else Uploader.kick(this)
+                if (!Uploader.busy() && !running && !Tidy.busy()) finishService()
+                return START_STICKY
             }
             ACTION_TIDY -> {
                 ensureForeground()
@@ -253,17 +276,21 @@ class RecordService : Service() {
                 jobs.forEach { addSlot(it.url, it.ua, it.name, it.path) }
             }
         }
-        if (!running && !Tidy.busy() && intent?.action != ACTION_ADD) finishService()
+        Uploader.kick(this)
+        if (!running && !Tidy.busy() && !Uploader.busy() && intent?.action != ACTION_ADD) finishService()
         return START_STICKY
     }
 
     fun finishService() {
         // 정리 중인 파일이 있으면 끝날 때까지 기다렸다가 종료
-        if (Tidy.busy()) {
-            Tidy.onIdle = { ticker.post { if (!running && !Tidy.busy()) finishService() } }
+        if (Tidy.busy() || Uploader.busy()) {
+            val again = { ticker.post { if (!running && !Tidy.busy() && !Uploader.busy()) finishService() } ; Unit }
+            Tidy.onIdle = again
+            Uploader.onIdle = again
             return
         }
         Tidy.onIdle = null
+        Uploader.onIdle = null
         ticker.removeCallbacksAndMessages(null)
         try { wake?.release() } catch (_: Exception) {}
         try { wifi?.release() } catch (_: Exception) {}

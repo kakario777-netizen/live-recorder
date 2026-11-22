@@ -132,6 +132,7 @@ class MainActivity : Activity() {
         refresh()
         updater.check(silent = true)
         askResume()
+        RecordService.startUploads(this)
     }
 
     override fun onResume() {

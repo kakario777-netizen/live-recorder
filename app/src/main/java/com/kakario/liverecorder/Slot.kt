@@ -333,7 +333,7 @@ class Slot(
                     try { out?.flush(); out?.close() } catch (_: Exception) {}
                     mediaUri?.let { Saver.finish(ctx, it) }
                     path?.let { Saver.scan(ctx, it) }
-                    if (bytes > 0) Tidy.enqueue(ctx, Tidy.Job(fileName, path, mediaUri))
+                    if (bytes > 0) Tidy.enqueue(ctx, Tidy.Job(fileName, path, mediaUri, streamer))
                     out = null; mediaUri = null; path = null; curTrack = null
                     bytes = 0; segs = 0; recordStartAt = 0; firstSegAt = 0
                 } else if (out != null && gap > STALL_MS) {
@@ -405,7 +405,7 @@ class Slot(
             mediaUri?.let { Saver.finish(ctx, it) }
             path?.let { Saver.scan(ctx, it) }
             // 녹화가 끝난 파일은 별도 작업 공간에서 정리(목차 붙이기) 후 완성 처리
-            if (bytes > 0 && out != null) Tidy.enqueue(ctx, Tidy.Job(fileName, path, mediaUri))
+            if (bytes > 0 && out != null) Tidy.enqueue(ctx, Tidy.Job(fileName, path, mediaUri, streamer))
             destroyPlayer()
             state = if (bytes > 0) "끝 · ${bytes / 1024 / 1024}MB 저장" else "끝 · 저장된 영상 없음"
             log(state + if (fileName.isNotEmpty()) " ($fileName)" else "")

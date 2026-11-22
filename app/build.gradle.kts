@@ -47,4 +47,6 @@ dependencies {
     implementation("androidx.media3:media3-common:1.5.1")
     // 구글 로그인 차단 피하기 (앱 이름 머리말 끄기)
     implementation("androidx.webkit:webkit:1.12.1")
+    // NAS(FTP) 자동 업로드
+    implementation("commons-net:commons-net:3.11.1")
 }
