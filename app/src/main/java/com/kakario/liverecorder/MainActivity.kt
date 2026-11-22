@@ -48,6 +48,7 @@ class MainActivity : Activity() {
     private lateinit var recBtn: Button
     private lateinit var loading: ProgressBar
     private val prefs by lazy { getSharedPreferences("main", MODE_PRIVATE) }
+    private val updater by lazy { Updater(this) }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -104,9 +105,10 @@ class MainActivity : Activity() {
         }
         root.addView(info)
         val bottom = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), 0, dp(4), dp(4)) }
-        bottom.addView(btn("진단 저장") { diagnose() }, LinearLayout.LayoutParams(0, -2, 1f))
+        bottom.addView(btn("진단") { diagnose() }, LinearLayout.LayoutParams(0, -2, 1f))
         bottom.addView(btn("기록") { showLog() }, LinearLayout.LayoutParams(0, -2, 1f))
-        bottom.addView(btn("파일") { startActivity(Intent(this, FilesActivity::class.java)) }, LinearLayout.LayoutParams(0, -2, 1f))
+        bottom.addView(btn("업데이트") { updater.check(silent = false) }, LinearLayout.LayoutParams(0, -2, 1f))
+        bottom.addView(btn("파일") { innerNav = true; startActivity(Intent(this, FilesActivity::class.java)) }, LinearLayout.LayoutParams(0, -2, 1f))
         recBtn = btn("● 녹화", Color.parseColor("#D32F2F")) { onRecord() }.apply { setTypeface(null, Typeface.BOLD) }
         bottom.addView(recBtn, LinearLayout.LayoutParams(0, -2, 1.3f))
         root.addView(bottom)
@@ -126,7 +128,23 @@ class MainActivity : Activity() {
         val start = shared ?: prefs.getString("last", null)
         if (start != null) { urlBox.setText(start); web.loadUrl(start) }
         refresh()
+        updater.check(silent = true)
     }
+
+    override fun onResume() {
+        super.onResume()
+        updater.onResume()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // 앱을 나갈 때 받아 둔 업데이트 설치 (녹화·변환 중이면 안 함)
+        if (!isChangingConfigurations && !innerNav) updater.installOnLeave()
+        innerNav = false
+    }
+
+    /** 앱 안 다른 화면(파일 목록)으로 갈 때는 '앱 나감'으로 치지 않음 */
+    private var innerNav = false
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
