@@ -90,33 +90,45 @@ object Diag {
      * 서버가 H.265(HEVC)·AV1·H.264 중 무엇을 실제로 주는지 확인한다.
      */
     private fun codecTest(sb: StringBuilder, items: List<Captured>, ua: String) {
-        val master = items.filter { it.kind == "hls" }.firstOrNull { it.url.contains("master", true) || it.url.contains("preferredVideoCodec", true) }
+        val hls = items.filter { it.kind == "hls" }
+        val master = hls.firstOrNull { it.url.contains("master", true) }
+        // 화질별 목록: 접근 키(pkey)가 붙은 것 중 하나
+        val media = hls.firstOrNull { !it.url.contains("master", true) && it.url.contains("pkey") }
         sb.appendLine("[코덱 시험]")
-        if (master == null) { sb.appendLine("- 대표 재생목록을 못 찾았어요 (방송을 틀어 놓고 다시 진단해 주세요)"); sb.appendLine(); return }
-        sb.appendLine("기준: ${maskUrl(master.url).take(140)}")
-        val tries = listOf("hevc", "h265", "h264", "avc", "av1", null)
-        for (v in tries) {
-            val u = setParam(master.url, "preferredVideoCodec", v)
-            val label = v ?: "(코덱 칸 없음)"
-            try {
-                val r = Net.get(u, master, ua, maxBytes = 512 * 1024)
-                if (r.code !in 200..299) { sb.appendLine("- $label → HTTP ${r.code}"); continue }
-                val p = Hls.parse(String(r.body), r.finalUrl)
-                if (!p.isMaster) {
-                    val codecLine = String(r.body).lines().firstOrNull { it.contains("CODECS=") } ?: ""
-                    sb.appendLine("- $label → 화질 목록 아님 ${codecLine.take(80)}")
-                    continue
-                }
-                val codecs = p.variants.mapNotNull { it.codecs?.substringBefore(',') }.distinct()
-                val kinds = codecs.map { c -> Codec.label(Codec.fromCodecsAttr(c)).let { if (it == "알 수 없음") c else it } }.distinct()
-                val best = p.variants.maxByOrNull { it.bandwidth }
-                sb.appendLine("- $label → ${kinds.joinToString("/").ifEmpty { "코덱 표시 없음" }} · 화질 ${p.variants.size}개" +
-                    (best?.let { " · 최고 ${it.resolution ?: "?"} ${it.bandwidth / 1000}kbps" } ?: ""))
-            } catch (e: Exception) {
-                sb.appendLine("- $label → 오류 ${e.message}")
+        if (master == null && media == null) { sb.appendLine("- 재생목록을 못 찾았어요 (방송을 틀어 놓고 다시 진단해 주세요)"); sb.appendLine(); return }
+        val tries = listOf("hevc", "h265", "h264", "av1", null)
+        if (master != null) {
+            sb.appendLine("대표 목록: ${maskUrl(master.url).take(120)}")
+            for (v in tries) {
+                val label = v ?: "(코덱 칸 없음)"
+                try {
+                    val r = Net.get(setParam(master.url, "preferredVideoCodec", v), master, ua, maxBytes = 512 * 1024)
+                    if (r.code !in 200..299) { sb.appendLine("- $label → HTTP ${r.code}"); continue }
+                    val p = Hls.parse(String(r.body), r.finalUrl)
+                    val kinds = p.variants.mapNotNull { it.codecs?.substringBefore(',') }
+                        .map { c -> Codec.label(Codec.fromCodecsAttr(c)).let { if (it == "알 수 없음") c else it } }.distinct()
+                    val best = p.variants.maxByOrNull { it.bandwidth }
+                    sb.appendLine("- $label → ${kinds.joinToString("/").ifEmpty { "코덱 표시 없음" }} · 화질 ${p.variants.size}개" +
+                        (best?.let { " · 최고 ${it.resolution ?: "?"} ${it.bandwidth / 1000}kbps" } ?: ""))
+                } catch (e: Exception) { sb.appendLine("- $label → 오류 ${e.message}") }
             }
         }
-        sb.appendLine("※ 위에서 H.265가 나오면, 녹화를 처음부터 H.265로 받게 바꿀 수 있어요")
+        if (media != null) {
+            sb.appendLine("화질별 목록: ${maskUrl(media.url).take(120)}")
+            for (v in tries) {
+                val label = v ?: "(코덱 칸 없음)"
+                try {
+                    val r = Net.get(setParam(media.url, "preferredVideoCodec", v), media, ua, maxBytes = 512 * 1024)
+                    if (r.code !in 200..299) { sb.appendLine("- $label → HTTP ${r.code}"); continue }
+                    val body = String(r.body)
+                    // 실제 조각 이름에 들어 있는 코덱 표시
+                    val tag = Regex("""_(h264|h265|hevc|av1|avc|vp9)_""", RegexOption.IGNORE_CASE).find(body)?.groupValues?.get(1)
+                        ?: if (body.contains("#EXT-X-MAP")) "이름에 코덱 표시 없음(원본 추정)" else "?"
+                    sb.appendLine("- $label → 받은 조각: $tag")
+                } catch (e: Exception) { sb.appendLine("- $label → 오류 ${e.message}") }
+            }
+        }
+        sb.appendLine("※ hevc·h265 줄에 H.265(또는 hevc)가 나오면 처음부터 H.265로 녹화할 수 있어요")
         sb.appendLine()
     }
 
