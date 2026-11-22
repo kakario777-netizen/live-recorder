@@ -71,9 +71,53 @@ object Diag {
             sb.appendLine()
         }
 
+        codecTest(sb, items, ua)
+
         sb.appendLine("[녹화 기록]")
         sb.appendLine(RecordService.logText().ifBlank { "(아직 없음)" })
         return sb.toString()
+    }
+
+    private fun setParam(url: String, key: String, value: String?): String {
+        val base = url.substringBefore('?')
+        val q = url.substringAfter('?', "").split('&').filter { it.isNotEmpty() && it.substringBefore('=') != key && !it.startsWith("_HLS_") }.toMutableList()
+        if (value != null) q.add("$key=$value")
+        return if (q.isEmpty()) base else base + "?" + q.joinToString("&")
+    }
+
+    /**
+     * 코덱 시험: 대표 재생목록(master)을 코덱 칸만 바꿔 가며 요청해서,
+     * 서버가 H.265(HEVC)·AV1·H.264 중 무엇을 실제로 주는지 확인한다.
+     */
+    private fun codecTest(sb: StringBuilder, items: List<Captured>, ua: String) {
+        val master = items.filter { it.kind == "hls" }.firstOrNull { it.url.contains("master", true) || it.url.contains("preferredVideoCodec", true) }
+        sb.appendLine("[코덱 시험]")
+        if (master == null) { sb.appendLine("- 대표 재생목록을 못 찾았어요 (방송을 틀어 놓고 다시 진단해 주세요)"); sb.appendLine(); return }
+        sb.appendLine("기준: ${maskUrl(master.url).take(140)}")
+        val tries = listOf("hevc", "h265", "h264", "avc", "av1", null)
+        for (v in tries) {
+            val u = setParam(master.url, "preferredVideoCodec", v)
+            val label = v ?: "(코덱 칸 없음)"
+            try {
+                val r = Net.get(u, master, ua, maxBytes = 512 * 1024)
+                if (r.code !in 200..299) { sb.appendLine("- $label → HTTP ${r.code}"); continue }
+                val p = Hls.parse(String(r.body), r.finalUrl)
+                if (!p.isMaster) {
+                    val codecLine = String(r.body).lines().firstOrNull { it.contains("CODECS=") } ?: ""
+                    sb.appendLine("- $label → 화질 목록 아님 ${codecLine.take(80)}")
+                    continue
+                }
+                val codecs = p.variants.mapNotNull { it.codecs?.substringBefore(',') }.distinct()
+                val kinds = codecs.map { c -> Codec.label(Codec.fromCodecsAttr(c)).let { if (it == "알 수 없음") c else it } }.distinct()
+                val best = p.variants.maxByOrNull { it.bandwidth }
+                sb.appendLine("- $label → ${kinds.joinToString("/").ifEmpty { "코덱 표시 없음" }} · 화질 ${p.variants.size}개" +
+                    (best?.let { " · 최고 ${it.resolution ?: "?"} ${it.bandwidth / 1000}kbps" } ?: ""))
+            } catch (e: Exception) {
+                sb.appendLine("- $label → 오류 ${e.message}")
+            }
+        }
+        sb.appendLine("※ 위에서 H.265가 나오면, 녹화를 처음부터 H.265로 받게 바꿀 수 있어요")
+        sb.appendLine()
     }
 
     private fun describeMedia(sb: StringBuilder, p: Playlist, c: Captured, ua: String) {

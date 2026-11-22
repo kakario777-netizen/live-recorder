@@ -58,6 +58,7 @@ object Codec {
             c.contains("hvc1") || c.contains("hev1") -> MediaFormat.MIMETYPE_VIDEO_HEVC
             c.contains("avc1") || c.contains("avc3") -> MediaFormat.MIMETYPE_VIDEO_AVC
             c.contains("av01") -> MediaFormat.MIMETYPE_VIDEO_AV1
+            c.contains("vp09") -> MediaFormat.MIMETYPE_VIDEO_VP9
             else -> null
         }
     }
