@@ -141,7 +141,7 @@ object Uploader {
     fun enqueue(ctx: Context, name: String, path: String?, streamer: String) {
         if (path == null || !FtpConfig.ready(ctx)) return
         // H.264는 변환 후에만 올림 (변환 설정이 켜져 있을 때)
-        if (Tidy.autoH265(ctx) && name.lowercase().endsWith(".mp4") &&
+        if (Tidy.autoH265(ctx) && Codec.phoneHasHevcEncoder() && name.lowercase().endsWith(".mp4") &&
             Codec.probeUri(ctx, android.net.Uri.fromFile(File(path))) == android.media.MediaFormat.MIMETYPE_VIDEO_AVC) {
             RecordService.addLog("H.264라 업로드하지 않음 (H.265 변환 후 올림): $name")
             Tidy.enqueue(ctx, Tidy.Job(name, path, null, streamer))
