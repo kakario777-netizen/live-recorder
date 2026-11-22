@@ -29,7 +29,7 @@ import java.util.concurrent.TimeUnit
  * 녹화 칸 하나 = 보이지 않는 재생기(소리 끔) + 조각 따라 저장기.
  * 재생기는 서비스 안에서 돌기 때문에 앱을 내리거나 화면을 꺼도 계속 재생·녹화된다.
  *
- * 상태: 준비 중 → 720 대기중 → 녹화 중 ⇄ 재연결 중 → 끝
+ * 상태: 방송 대기 → 720 대기중 → 녹화 중 ⇄ 일시정지(티켓방·방송 꺼짐) — 직접 중지할 때까지 포기하지 않음
  */
 class Slot(
     private val ctx: Context,
@@ -40,8 +40,10 @@ class Slot(
 ) {
     companion object {
         const val WAIT_HQ_MS = 60_000L      // 720p를 기다리는 최대 시간 — 넘으면 그때 화질로 시작
-        const val STALL_RELOAD_MS = 20_000L // 이만큼 새 조각이 없으면 페이지 다시 열기
-        const val GIVE_UP_MS = 15 * 60_000L // 이만큼 계속 없으면 끝 (방송 종료로 판단)
+        const val STALL_MS = 20_000L            // 이만큼 새 조각이 없으면 '끊김'으로 보고 확인 시작
+        const val PAUSE_CHECK_MS = 30_000L      // 녹화 중 끊김(티켓방·방송 꺼짐): 30초마다 계속 확인, 포기 안 함
+        const val START_WAIT_CHECK_MS = 120_000L // 방송 시작 전 대기: 2분마다 확인
+        const val NEW_FILE_AFTER_MS = 30 * 60_000L // 30분 넘게 끊겼다 돌아오면 새 방송으로 보고 새 파일
         const val TARGET_HEIGHT = 720
     }
 
@@ -237,19 +239,25 @@ class Slot(
         var lastReload = 0L
         var lastScan = 0L
         var fails = 0
-        setState("720 대기중")
+        setState("방송 대기")
         try {
             while (!stopFlag) {
                 val c = q.poll(1, TimeUnit.SECONDS)
                 val now = System.currentTimeMillis()
                 if (c == null) {
                     val idle = now - lastSegAt
-                    if (idle > GIVE_UP_MS) { log("15분 동안 영상이 없어 종료 (방송 종료로 판단)"); break }
-                    if (idle > STALL_RELOAD_MS && now - lastReload > 30_000) {
-                        lastReload = now
-                        setState(if (out == null) "720 대기중" else "재연결 중")
-                        log("${idle / 1000}초째 새 영상 없음 → 재생기 다시 열기 (티켓방·끊김·방송 종료 확인 중)")
-                        reloadPlayer()
+                    if (idle > STALL_MS) {
+                        val everRecorded = recordStartAt > 0
+                        val interval = if (everRecorded) PAUSE_CHECK_MS else START_WAIT_CHECK_MS
+                        setState(when {
+                            everRecorded -> "일시정지"
+                            firstSegAt == 0L -> "방송 대기"
+                            else -> "720 대기중"
+                        })
+                        if (now - lastReload > interval) {
+                            lastReload = now
+                            reloadPlayer()
+                        }
                     }
                     continue
                 }
@@ -262,6 +270,16 @@ class Slot(
                 if (streamId != null && sid != streamId) continue
                 val track = Sniff.trackOf(c.url)
                 if (Sniff.isInit(c.url)) { lastInit[track] = c; continue }
+                if (out != null && now - lastSegAt > NEW_FILE_AFTER_MS) {
+                    log("${(now - lastSegAt) / 60000}분 만에 방송이 다시 나옴 → 새 방송으로 보고 새 파일에 녹화")
+                    try { out?.flush(); out?.close() } catch (_: Exception) {}
+                    mediaUri?.let { Saver.finish(ctx, it) }
+                    path?.let { Saver.scan(ctx, it) }
+                    out = null; mediaUri = null; path = null; curTrack = null
+                    bytes = 0; segs = 0; recordStartAt = 0; firstSegAt = 0
+                } else if (out != null && now - lastSegAt > STALL_MS) {
+                    log("방송이 다시 나옴 → 같은 파일에 이어서 녹화")
+                }
                 lastSegAt = now
                 if (firstSegAt == 0L) firstSegAt = now
                 val mp4 = key.endsWith(".mp4")
@@ -323,7 +341,9 @@ class Slot(
     fun summary(): String {
         val min = if (recordStartAt > 0) (System.currentTimeMillis() - recordStartAt) / 60000 else 0
         return when (state) {
-            "녹화 중", "재연결 중" -> "$state · ${min}분 · ${bytes / 1024 / 1024}MB" + (if (quality.isNotEmpty()) " · $quality" else "") + (if (codec.isNotEmpty()) " $codec" else "")
+            "일시정지" -> "일시정지 (티켓방·방송 꺼짐 · ${(System.currentTimeMillis() - lastSegAt) / 60000}분째) · ${bytes / 1024 / 1024}MB"
+            "방송 대기" -> "방송 대기 (켜지면 자동 녹화)"
+            "녹화 중" -> "$state · ${min}분 · ${bytes / 1024 / 1024}MB" + (if (quality.isNotEmpty()) " · $quality" else "") + (if (codec.isNotEmpty()) " $codec" else "")
             else -> state
         }
     }

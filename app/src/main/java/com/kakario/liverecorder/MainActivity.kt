@@ -388,7 +388,7 @@ class MainActivity : Activity() {
             .setView(box)
             .setPositiveButton("녹화 시작") { _, _ ->
                 RecordService.add(this, page, ua)
-                Toast.makeText(this, "녹화를 추가했어요. 720p가 잡히면 시작하고, 화면을 꺼도 계속돼요.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "녹화를 추가했어요. 방송이 꺼져 있으면 켜질 때까지 기다리고, 720p가 잡히면 시작해요. 화면을 꺼도 계속돼요.", Toast.LENGTH_LONG).show()
             }
             .setNegativeButton("취소", null)
             .show()
