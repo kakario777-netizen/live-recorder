@@ -133,6 +133,9 @@ class MainActivity : Activity() {
         updater.check(silent = true)
         askResume()
         RecordService.startUploads(this)
+        // 폰끼리 동기화: 켤 때 즐겨찾기·설정 맞추기, 담당 폰이면 명령 대기 시작
+        Sync.pushSoon(this)
+        Sync.startRecorderService(this)
     }
 
     override fun onResume() {
@@ -309,11 +312,73 @@ class MainActivity : Activity() {
             others > 0 -> "다른 형식 영상 주소 ${others}개 (진단 저장 후 보내 주세요)"
             else -> "방송을 재생하면 영상 주소를 자동으로 찾아요"
         }
-        recBtn.text = if (RecordService.running) "녹화 ${RecordService.list().size}개" else "● 녹화"
+        recBtn.text = when {
+            Sync.isRemote(this) -> "담당 폰"
+            RecordService.running -> "녹화 ${RecordService.list().size}개"
+            else -> "● 녹화"
+        }
     }
 
     private fun onRecord() {
-        if (RecordService.running) showSlots() else addRecording()
+        when {
+            Sync.isRemote(this) -> showRemoteStatus()
+            RecordService.running -> showSlots()
+            else -> addRecording()
+        }
+    }
+
+    /** 녹화 요청: 이 폰이 리모컨이면 담당 폰으로 명령, 아니면 이 폰에서 녹화 */
+    private fun requestRecord(url: String, ua: String, name: String) {
+        if (Sync.isRemote(this)) {
+            Sync.sendCommand(this, "add", url, name, ua) { r -> runOnUiThread { Toast.makeText(this, r, Toast.LENGTH_LONG).show() } }
+            return
+        }
+        askBattery()
+        RecordService.add(this, url, ua, name)
+        Toast.makeText(this, "${name.ifEmpty { hostOf(url) }} 녹화를 추가했어요. 꺼져 있으면 켜질 때까지 기다리고, 720p가 잡히면 시작해요. 화면을 꺼도 계속돼요.", Toast.LENGTH_LONG).show()
+    }
+
+    /** 리모컨 폰: 담당 폰의 녹화 현황 보기·중지 */
+    private fun showRemoteStatus() {
+        Toast.makeText(this, "담당 폰 현황 불러오는 중…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val st = Sync.fetchStatus(this)
+            runOnUiThread {
+                val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(8)) }
+                lateinit var dlg: AlertDialog
+                if (st == null) {
+                    box.addView(TextView(this).apply { text = "현황을 불러오지 못했어요.\n담당 폰에서 앱을 한 번 열었는지, NAS 설정이 같은지 확인해 주세요." })
+                } else {
+                    val age = if (st.ageSec < 90) "${st.ageSec}초 전" else "${st.ageSec / 60}분 전"
+                    box.addView(TextView(this).apply {
+                        text = "${st.device} · $age 기준 · 업로드 대기 ${st.uploads}개" + if (st.ageSec > 120) "\n(담당 폰 응답이 늦어요 — 꺼졌거나 인터넷이 끊겼을 수 있어요)" else ""
+                        textSize = 12f; setTextColor(Color.parseColor("#666666"))
+                    })
+                    if (st.slots.isEmpty()) box.addView(TextView(this).apply { text = "\n녹화 중인 방송이 없어요"; textSize = 14f })
+                    st.slots.forEach { sl ->
+                        val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(6), 0, dp(6)) }
+                        row.addView(TextView(this).apply {
+                            text = "${sl.name}\n${sl.summary}"; textSize = 13f; setTextColor(Color.parseColor("#222222"))
+                        }, LinearLayout.LayoutParams(0, -2, 1f))
+                        row.addView(btn("중지", Color.parseColor("#D32F2F")) {
+                            AlertDialog.Builder(this).setMessage("${sl.name} 녹화를 멈출까요?")
+                                .setPositiveButton("중지") { _, _ ->
+                                    dlg.dismiss()
+                                    Sync.sendCommand(this, "stop", sl.url) { r -> runOnUiThread { Toast.makeText(this, r, Toast.LENGTH_LONG).show() } }
+                                }.setNegativeButton("취소", null).show()
+                        })
+                        box.addView(row)
+                    }
+                }
+                dlg = AlertDialog.Builder(this)
+                    .setTitle("녹화 담당 폰 현황")
+                    .setView(ScrollView(this).apply { addView(box) })
+                    .setPositiveButton("이 방송 녹화 요청") { _, _ -> addRecording() }
+                    .setNeutralButton("새로고침") { _, _ -> showRemoteStatus() }
+                    .setNegativeButton("닫기", null)
+                    .show()
+            }
+        }.start()
     }
 
     /** 녹화 현황: 칸마다 상태와 중지 버튼, 아래에 '이 방송 추가' */
@@ -353,6 +418,7 @@ class MainActivity : Activity() {
         if (page.isBlank() || !page.startsWith("http")) {
             Toast.makeText(this, "먼저 방송 페이지를 열어 주세요", Toast.LENGTH_LONG).show(); return
         }
+        if (Sync.isRemote(this)) { confirmAdd(page); return }
         if (RecordService.list().size >= RecordService.MAX_SLOTS) {
             Toast.makeText(this, "동시 녹화는 최대 ${RecordService.MAX_SLOTS}개예요", Toast.LENGTH_LONG).show(); return
         }
@@ -408,7 +474,7 @@ class MainActivity : Activity() {
         val preview = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#666666")) }
         box.addView(preview)
         fun updatePreview() {
-            Names.setParts(this, cSite.isChecked, cName.isChecked, cTime.isChecked)
+            Names.userSetParts(this, cSite.isChecked, cName.isChecked, cTime.isChecked)
             preview.text = "예: " + Names.build(this, page, nameBox.text.toString()) + ".mp4"
         }
         listOf(cSite, cName, cTime).forEach { it.setOnCheckedChangeListener { _, _ -> updatePreview() } }
@@ -423,9 +489,8 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this)
             .setTitle("이 방송을 녹화할까요?")
             .setView(ScrollView(this).apply { addView(box) })
-            .setPositiveButton("녹화 시작") { _, _ ->
-                RecordService.add(this, page, ua, Names.clean(nameBox.text.toString()))
-                Toast.makeText(this, "녹화를 추가했어요. 방송이 꺼져 있으면 켜질 때까지 기다리고, 720p가 잡히면 시작해요. 화면을 꺼도 계속돼요.", Toast.LENGTH_LONG).show()
+            .setPositiveButton(if (Sync.isRemote(this)) "담당 폰에서 녹화" else "녹화 시작") { _, _ ->
+                requestRecord(page, ua, Names.clean(nameBox.text.toString()))
             }
             .setNegativeButton("취소", null)
             .show()
@@ -497,9 +562,7 @@ class MainActivity : Activity() {
                     if (RecordService.list().size >= RecordService.MAX_SLOTS) {
                         Toast.makeText(this, "동시 녹화는 최대 ${RecordService.MAX_SLOTS}개예요", Toast.LENGTH_LONG).show()
                     } else {
-                        askBattery()
-                        RecordService.add(this, b.url, web.settings.userAgentString, Names.clean(b.name))
-                        Toast.makeText(this, "${b.name} 녹화를 추가했어요 (꺼져 있으면 방송 대기)", Toast.LENGTH_LONG).show()
+                        requestRecord(b.url, web.settings.userAgentString, Names.clean(b.name))
                     }
                 })
             }

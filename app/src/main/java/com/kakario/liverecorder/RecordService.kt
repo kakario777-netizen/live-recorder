@@ -35,6 +35,7 @@ class RecordService : Service() {
         const val ACTION_RESUME = "resume"
         const val ACTION_TIDY = "tidy"
         const val ACTION_UPLOAD = "upload"
+        const val ACTION_SYNC = "sync"
 
         /** 남은 업로드 처리 시작 (설정 저장 후, 앱 켤 때 등) */
         fun startUploads(ctx: Context) {
@@ -184,8 +185,17 @@ class RecordService : Service() {
         val tidyLine = Tidy.current?.let { "정리 중… ${Tidy.percent}% — ${it.name}" }
         val upLine = Uploader.current?.let { "업로드 중… ${Uploader.percent}% — ${it.name}" }
         status = (l.map { "${it.id}. ${it.host} — ${it.summary()}" } + listOfNotNull(tidyLine, upLine)).joinToString("\n")
-        if (l.isNotEmpty() || Tidy.busy() || Uploader.busy()) getSystemService(NotificationManager::class.java).notify(NID, notification(status, true))
+        if (l.isEmpty() && !Tidy.busy() && !Uploader.busy() && Sync.isRecorder(this)) status = "녹화 담당 폰 · 원격 명령 대기 중"
+        if (l.isNotEmpty() || Tidy.busy() || Uploader.busy() || Sync.isRecorder(this)) getSystemService(NotificationManager::class.java).notify(NID, notification(status, true))
         onChange?.invoke()
+    }
+
+    /** 담당 폰 대기 상태 알림 */
+    private fun ensureForegroundQuiet() {
+        val n = notification("녹화 담당 폰 · 원격 명령 대기 중", true)
+        if (Build.VERSION.SDK_INT >= 34) startForeground(NID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        else startForeground(NID, n)
+        startSyncLoop()
     }
 
     private fun ensureForeground() {
@@ -210,8 +220,28 @@ class RecordService : Service() {
         // 3초마다 알림 갱신
         ticker.removeCallbacksAndMessages(null)
         ticker.post(object : Runnable {
-            override fun run() { lastNotify = 0; updateNotification(); if (running || Tidy.busy() || Uploader.busy()) ticker.postDelayed(this, 3000) }
+            override fun run() { lastNotify = 0; updateNotification(); if (running || Tidy.busy() || Uploader.busy() || Sync.isRecorder(this@RecordService)) ticker.postDelayed(this, 3000) }
         })
+    }
+
+    private var syncThread: Thread? = null
+
+    /** 녹화 담당 폰: 15초마다 원격 명령 확인, 30초마다 현황 올리기, 5분마다 즐겨찾기·설정 맞추기 */
+    private fun startSyncLoop() {
+        if (!Sync.isRecorder(this)) return
+        if (syncThread?.isAlive == true) return
+        syncThread = Thread({
+            var n = 0
+            while (Sync.isRecorder(this) && !shuttingDown) {
+                try {
+                    Sync.pollCommands(this)
+                    if (n % 2 == 0) Sync.pushStatus(this)
+                    if (n % 20 == 0) Sync.syncData(this)
+                } catch (_: Exception) {}
+                n++
+                try { Thread.sleep(15_000) } catch (_: InterruptedException) { break }
+            }
+        }, "sync").also { it.start() }
     }
 
     private fun addSlot(url: String, ua: String, name: String, resumePath: String? = null): Boolean {
@@ -247,6 +277,11 @@ class RecordService : Service() {
                 ensureForeground()
                 addSlot(intent.getStringExtra("url") ?: return START_STICKY, intent.getStringExtra("ua") ?: "", intent.getStringExtra("name") ?: "")
             }
+            ACTION_SYNC -> {
+                ensureForeground()
+                startSyncLoop()
+                return START_STICKY
+            }
             ACTION_UPLOAD -> {
                 ensureForeground()
                 val name = intent.getStringExtra("name")
@@ -277,11 +312,17 @@ class RecordService : Service() {
             }
         }
         Uploader.kick(this)
+        startSyncLoop()
         if (!running && !Tidy.busy() && !Uploader.busy() && intent?.action != ACTION_ADD) finishService()
         return START_STICKY
     }
 
     fun finishService() {
+        // 녹화 담당 폰은 녹화가 없어도 원격 명령을 받으려고 계속 켜 둠
+        if (Sync.isRecorder(this) && !shuttingDown) {
+            ensureForegroundQuiet()
+            return
+        }
         // 정리 중인 파일이 있으면 끝날 때까지 기다렸다가 종료
         if (Tidy.busy() || Uploader.busy()) {
             val again = { ticker.post { if (!running && !Tidy.busy() && !Uploader.busy()) finishService() } ; Unit }

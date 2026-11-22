@@ -40,6 +40,13 @@ object Names {
     fun setParts(ctx: Context, site: Boolean, streamer: Boolean, time: Boolean) =
         prefs(ctx).edit().putBoolean("nameSite", site).putBoolean("nameStreamer", streamer).putBoolean("nameTime", time).apply()
 
+    /** 사용자가 직접 바꿨을 때 (다른 폰에도 맞춤) */
+    fun userSetParts(ctx: Context, site: Boolean, streamer: Boolean, time: Boolean) {
+        if (useSite(ctx) == site && useStreamer(ctx) == streamer && useTime(ctx) == time) return
+        setParts(ctx, site, streamer, time)
+        Sync.settingsChanged(ctx)
+    }
+
     fun timeText(at: Long = System.currentTimeMillis()): String =
         SimpleDateFormat("yyyyMMdd HHmmss", Locale.KOREA).format(Date(at))
 

@@ -191,7 +191,7 @@ object Uploader {
         }
     }
 
-    private fun connect(ctx: Context): FTPClient {
+    fun connect(ctx: Context): FTPClient {
         val f = FTPClient()
         f.controlEncoding = "UTF-8"
         f.connectTimeout = 15000
@@ -219,7 +219,7 @@ object Uploader {
         "연결 실패: ${e.message ?: e.javaClass.simpleName}"
     }
 
-    private fun mkdirs(f: FTPClient, dir: String) {
+    fun mkdirs(f: FTPClient, dir: String) {
         var cur = ""
         dir.trim('/').split('/').filter { it.isNotEmpty() }.forEach { d ->
             cur += "/$d"

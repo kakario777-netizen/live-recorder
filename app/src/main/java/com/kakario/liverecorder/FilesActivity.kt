@@ -227,10 +227,22 @@ class FilesActivity : Activity() {
         val user = field("아이디", FtpConfig.user(this))
         val pw = field("비밀번호", FtpConfig.password(this), android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD)
         val folder = field("올릴 폴더 (안에 스트리머별 폴더가 생겨요)", FtpConfig.folder(this))
+        // 폰끼리 동기화 역할
+        box.addView(TextView(this).apply { text = "폰끼리 동기화 (같은 NAS 설정을 쓰는 폰끼리)"; textSize = 12f; setTextColor(Color.parseColor("#666666")); setPadding(0, dp(10), 0, 0) })
+        val roles = android.widget.RadioGroup(this)
+        val rSolo = android.widget.RadioButton(this).apply { id = 101; text = "사용 안 함"; textSize = 13f }
+        val rRec = android.widget.RadioButton(this).apply { id = 102; text = "녹화 담당 폰 (실제로 녹화·업로드)"; textSize = 13f }
+        val rRem = android.widget.RadioButton(this).apply { id = 103; text = "리모컨 폰 (담당 폰에 녹화 명령·현황 보기)"; textSize = 13f }
+        roles.addView(rSolo); roles.addView(rRec); roles.addView(rRem)
+        roles.check(when (Sync.role(this)) { Sync.RECORDER -> 102; Sync.REMOTE -> 103; else -> 101 })
+        box.addView(roles)
         val result = TextView(this).apply { textSize = 12f; setPadding(0, dp(8), 0, dp(4)) }
         box.addView(result)
-        fun save() = FtpConfig.save(this, on.isChecked, host.text.toString(), port.text.toString().toIntOrNull() ?: 21,
-            user.text.toString(), pw.text.toString(), folder.text.toString().ifBlank { "/녹화" })
+        fun save() {
+            FtpConfig.save(this, on.isChecked, host.text.toString(), port.text.toString().toIntOrNull() ?: 21,
+                user.text.toString(), pw.text.toString(), folder.text.toString().ifBlank { "/녹화" })
+            Sync.setRole(this, when (roles.checkedRadioButtonId) { 102 -> Sync.RECORDER; 103 -> Sync.REMOTE; else -> Sync.SOLO })
+        }
         val dlg = AlertDialog.Builder(this)
             .setTitle("NAS(FTP) 업로드 설정")
             .setView(android.widget.ScrollView(this).apply { addView(box) })
@@ -251,6 +263,8 @@ class FilesActivity : Activity() {
             dlg.dismiss()
             Toast.makeText(this, if (on.isChecked) "저장했어요. 녹화가 끝난 파일은 NAS에 자동으로 올라가요." else "저장했어요 (자동 업로드 꺼짐)", Toast.LENGTH_LONG).show()
             RecordService.startUploads(this)
+            Sync.pushSoon(this)
+            Sync.startRecorderService(this)
             render()
         }
     }
