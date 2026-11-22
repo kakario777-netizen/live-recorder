@@ -24,6 +24,29 @@ object Saver {
         return uri to out.buffered(256 * 1024)
     }
 
+    /**
+     * 녹화용: 다운로드/LiveRecorder 폴더에 실제 파일로 바로 쓴다.
+     * 녹화 중에도 크기가 보이고, 앱이 중간에 꺼져도 그때까지 받은 영상이 남는다.
+     */
+    fun createLive(ctx: Context, name: String, mime: String): Triple<Uri?, String?, OutputStream> {
+        return try {
+            val dir = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), "LiveRecorder")
+            dir.mkdirs()
+            val f = java.io.File(dir, name)
+            val out = java.io.FileOutputStream(f)
+            scan(ctx, f.absolutePath)
+            Triple(null, f.absolutePath, out)
+        } catch (e: Exception) {
+            val (u, o) = create(ctx, name, mime)
+            Triple(u, null, o)
+        }
+    }
+
+    /** 내 파일·갤러리에 크기가 바로 반영되게 알림 */
+    fun scan(ctx: Context, path: String) {
+        android.media.MediaScannerConnection.scanFile(ctx, arrayOf(path), null, null)
+    }
+
     fun finish(ctx: Context, uri: Uri) {
         val v = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
         ctx.contentResolver.update(uri, v, null, null)

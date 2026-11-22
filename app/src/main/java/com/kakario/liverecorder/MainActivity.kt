@@ -398,11 +398,32 @@ class MainActivity : Activity() {
             setTextIsSelectable(true)
             setPadding(dp(14), dp(8), dp(14), dp(8))
         }
+        val text = buildLogReport()
         AlertDialog.Builder(this)
             .setTitle("녹화 기록")
             .setView(ScrollView(this).apply { addView(tv) })
-            .setPositiveButton("닫기", null)
+            .setPositiveButton("복사") { _, _ ->
+                getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("녹화 기록", text))
+                Toast.makeText(this, "복사했어요. 채팅에 붙여 넣어 주세요.", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("공유") { _, _ ->
+                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), "기록 보내기"))
+            }
+            .setNegativeButton("닫기", null)
             .show()
+    }
+
+    /** 복사용: 앱 버전·기기 + 지금 상태 + 녹화 기록 */
+    private fun buildLogReport(): String {
+        val version = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "?" } catch (e: Exception) { "?" }
+        return buildString {
+            appendLine("=== 라이브 녹화 기록 ===")
+            appendLine("앱 $version / ${android.os.Build.MODEL} / 안드로이드 ${android.os.Build.VERSION.RELEASE}")
+            appendLine("상태: ${RecordService.status.ifBlank { "-" }}")
+            appendLine("잡힌 영상 주소: " + Sniff.list().joinToString(" | ") { "[${it.kind}] ${maskUrl(it.url).take(150)}" }.ifBlank { "없음" })
+            appendLine()
+            append(RecordService.logText().ifBlank { "(녹화 기록 없음)" })
+        }
     }
 
     @Deprecated("Deprecated in Java")

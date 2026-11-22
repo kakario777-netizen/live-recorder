@@ -98,6 +98,7 @@ class HlsRecorder(
     var bytes = 0L; private set
     var segCount = 0; private set
     var endReason = ""; private set
+    var failCount = 0; private set
 
     private val keyCache = HashMap<String, ByteArray>()
     private var playlistCodec: String? = null
@@ -187,6 +188,7 @@ class HlsRecorder(
                         }
                         val data = decrypt(fetch(s.url), s)
                         out.write(data)
+                        out.flush()
                         if (!codecChecked) {
                             codecChecked = true
                             // 첫 조각을 직접 열어 코덱 확인, 안 되면 재생목록 정보로
@@ -199,7 +201,8 @@ class HlsRecorder(
                     } catch (e: InterruptedException) {
                         break
                     } catch (e: Exception) {
-                        log("조각 ${s.seq} 건너뜀: ${e.message}")
+                        failCount++
+                        if (failCount <= 5 || failCount % 20 == 0) log("조각 ${s.seq} 받기 실패($failCount): ${e.message}")
                     }
                     lastSeq = s.seq
                     progress(bytes, segCount)

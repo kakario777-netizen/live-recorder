@@ -126,6 +126,8 @@ class RecordService : Service() {
 
     private fun record(src: Captured) {
         var uri: Uri? = null
+        var path: String? = null
+        var lastScan = 0L
         var fileName = ""
         addLog("주소: ${maskUrl(src.url)}")
         val rec = HlsRecorder(
@@ -136,8 +138,10 @@ class RecordService : Service() {
                 val host = hostOf(src.pageUrl).removePrefix("www.").replace(Regex("[^A-Za-z0-9.-]"), "_")
                 val time = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.KOREA).format(Date())
                 fileName = "${host}_$time.$ext"
-                val (u, out) = Saver.create(this, fileName, if (ext == "mp4") "video/mp4" else "video/mp2t")
+                val (u, pth, out) = Saver.createLive(this, fileName, if (ext == "mp4") "video/mp4" else "video/mp2t")
                 uri = u
+                path = pth
+                addLog("저장 파일: ${Saver.FOLDER}/$fileName" + if (pth == null) " (끝날 때 보임)" else "")
                 out
             },
             onCodec = { mime, fromPlaylist ->
@@ -152,10 +156,12 @@ class RecordService : Service() {
             probe = { data, ext -> Codec.probeBytes(this, data, ext) },
             progress = { bytes, segs ->
                 val now = System.currentTimeMillis()
+                val pth = path
+                if (pth != null && now - lastScan > 60_000) { lastScan = now; Saver.scan(this, pth) }
                 if (now - lastNotify > 3000) {
                     lastNotify = now
                     val min = (now - startedAt) / 60000
-                    status = "녹화 중 · ${min}분 · ${bytes / 1024 / 1024}MB" + if (codecInfo.isNotEmpty()) "\n$codecInfo" else ""
+                    status = "녹화 중 · ${min}분 · ${bytes / 1024 / 1024}MB · 조각 ${segs}개" + if (codecInfo.isNotEmpty()) "\n$codecInfo" else ""
                     notifyText(status)
                     onChange?.invoke()
                 }
@@ -170,6 +176,7 @@ class RecordService : Service() {
             addLog("녹화 실패: ${e.javaClass.simpleName} ${e.message}")
         }
         uri?.let { Saver.finish(this, it) }
+        path?.let { Saver.scan(this, it) }
         val mb = rec.bytes / 1024 / 1024
         val codecLine = if (codecInfo.isNotEmpty()) "\n$codecInfo" else ""
         status = if (rec.bytes > 0) "저장됨: ${Saver.FOLDER}/$fileName (${mb}MB)$codecLine" else "저장된 영상 없음 — 진단 저장을 눌러 보내 주세요"
