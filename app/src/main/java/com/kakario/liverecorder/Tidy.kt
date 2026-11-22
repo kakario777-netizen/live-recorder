@@ -142,7 +142,7 @@ object Tidy {
     fun isTidied(ctx: Context, name: String) =
         ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getStringSet("tidied", emptySet())!!.contains(name)
 
-    private fun markTidied(ctx: Context, name: String) {
+    fun markTidied(ctx: Context, name: String) {
         val p = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
         val set = HashSet(p.getStringSet("tidied", emptySet()) ?: emptySet())
         set.add(name)

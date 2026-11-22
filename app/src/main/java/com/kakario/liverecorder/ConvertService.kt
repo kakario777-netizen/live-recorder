@@ -58,7 +58,6 @@ class ConvertService : Service() {
     private var transformer: Transformer? = null
     private var wake: PowerManager.WakeLock? = null
     private var tmp: File? = null
-    private var deleteOriginal = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -95,7 +94,6 @@ class ConvertService : Service() {
             wake = getSystemService(PowerManager::class.java)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "liverec:conv").apply { acquire(12 * 3600 * 1000L) }
         }
-        deleteOriginal = getSharedPreferences("main", MODE_PRIVATE).getBoolean("deleteOriginal", false)
         if (current == null) next()
         return START_NOT_STICKY
     }
@@ -170,21 +168,38 @@ class ConvertService : Service() {
         main.postDelayed({ poll() }, 1000)
     }
 
+    /**
+     * 직접 변환 결과 저장: 변환본은 원래 이름(.mp4)으로 그 자리에 두고,
+     * 원본은 휴지통으로 옮겨 7일 보관 (자동 변환과 같은 방식). 자동 업로드가 켜져 있으면 올림.
+     */
     private fun save(job: Job, out: File) {
         try {
-            val name = job.name.substringBeforeLast('.') + "_h265.mp4"
-            val (uri, os) = Saver.create(this, name, "video/mp4")
-            os.use { o -> out.inputStream().use { it.copyTo(o, 256 * 1024) } }
-            Saver.finish(this, uri)
             val before = job.size / 1024 / 1024
             val after = out.length() / 1024 / 1024
-            out.delete()
-            var msg = "완료: $name (${before}MB → ${after}MB)"
-            if (deleteOriginal) {
-                msg += try {
-                    contentResolver.delete(job.uri, null, null); ", 원본 삭제"
-                } catch (e: Exception) { ", 원본은 직접 지워 주세요" }
+            val p = Tidy.pathFor(job.name)
+            val msg: String
+            if (p != null) {
+                val src = File(p)
+                val trash = File(Uploader.trashDir(), src.nameWithoutExtension + " (변환 전 원본)." + src.extension)
+                if (trash.exists()) trash.delete()
+                if (!src.renameTo(trash)) throw Exception("원본을 휴지통으로 옮길 수 없어요")
+                trash.setLastModified(System.currentTimeMillis())
+                Saver.scan(this, src.absolutePath)
+                val dst = File(src.parentFile, src.nameWithoutExtension + ".mp4")
+                out.inputStream().use { i -> dst.outputStream().use { o -> i.copyTo(o, 256 * 1024) } }
+                Saver.scan(this, dst.absolutePath)
+                Tidy.markTidied(this, dst.name)
+                msg = "완료: ${dst.name} (${before}MB → ${after}MB, 원본은 휴지통 7일)"
+                Uploader.enqueue(this, dst.name, dst.absolutePath, "")
+            } else {
+                // 직접 경로를 모르는 파일: 옆에 새 파일로 저장 (원본은 그대로)
+                val name = job.name.substringBeforeLast('.') + "_h265.mp4"
+                val (uri, os) = Saver.create(this, name, "video/mp4")
+                os.use { o -> out.inputStream().use { it.copyTo(o, 256 * 1024) } }
+                Saver.finish(this, uri)
+                msg = "완료: $name (${before}MB → ${after}MB)"
             }
+            out.delete()
             RecordService.addLog(msg)
             main.post { finishJob(msg, true) }
         } catch (e: Exception) {

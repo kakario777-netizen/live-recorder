@@ -56,14 +56,6 @@ class FilesActivity : Activity() {
         })
 
         root.addView(CheckBox(this).apply {
-            text = "변환 성공하면 원본 삭제"
-            textSize = 13f
-            isChecked = prefs.getBoolean("deleteOriginal", false)
-            setPadding(dp(4), 0, 0, 0)
-            setOnCheckedChangeListener { _, b -> prefs.edit().putBoolean("deleteOriginal", b).apply() }
-        }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) })
-
-        root.addView(CheckBox(this).apply {
             text = "H.264 녹화는 H.265로 변환 후 업로드 (충전 중에만 변환, 그전엔 대기)"
             textSize = 13f
             isChecked = Tidy.autoH265(this@FilesActivity)
