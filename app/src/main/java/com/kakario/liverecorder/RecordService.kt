@@ -8,65 +8,115 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import org.json.JSONArray
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
- * 녹화는 이 서비스에서 돈다. 알림창에 '녹화 중'이 떠 있는 동안은
- * 화면을 끄거나 다른 앱으로 나가도 계속 저장된다.
+ * 녹화 서비스 — 녹화 칸(Slot)을 최대 3개 돌린다.
+ * 알림창에 '녹화 중'이 떠 있는 동안은 앱을 내리거나 화면을 꺼도 계속 녹화된다.
+ * 진행 중인 녹화 목록은 저장해 두고, 앱이 강제로 꺼졌다 살아나면 이어서 녹화한다.
  */
 class RecordService : Service() {
 
     companion object {
-        const val ACTION_STOP = "stop"
+        const val MAX_SLOTS = 3
+        const val ACTION_STOP_ALL = "stop_all"
+        const val ACTION_ADD = "add"
+        const val ACTION_STOP_ONE = "stop_one"
+        const val ACTION_RESUME = "resume"
         private const val CH = "rec"
         private const val NID = 7
 
-        @Volatile var pending: Captured? = null
-        @Volatile var pendingUa: String = ""
-        @Volatile var pendingSiblings: List<Captured> = emptyList()
-        @Volatile var pendingFollow = false
-        @Volatile var running = false
+        val slots = ArrayList<Slot>()
+        private var nextId = 1
         @Volatile var status = ""
-        /** 지금 녹화 중인 방송의 코덱 안내 ("H.265 방송 — 그대로 녹화" 등) */
-        @Volatile var codecInfo = ""
         val log = ArrayList<String>()
         var onChange: (() -> Unit)? = null
+        private var instance: RecordService? = null
+
+        val running: Boolean get() = synchronized(slots) { slots.isNotEmpty() }
 
         fun addLog(s: String) {
             val t = SimpleDateFormat("HH:mm:ss", Locale.KOREA).format(Date())
             synchronized(log) {
                 log.add("[$t] $s")
-                if (log.size > 200) log.removeAt(0)
+                if (log.size > 300) log.removeAt(0)
             }
             onChange?.invoke()
         }
 
         fun logText(): String = synchronized(log) { log.joinToString("\n") }
 
-        fun start(ctx: Context, c: Captured, ua: String, siblings: List<Captured>, follow: Boolean = false) {
-            pending = c; pendingUa = ua; pendingSiblings = siblings; pendingFollow = follow
-            ctx.startForegroundService(Intent(ctx, RecordService::class.java))
+        fun list(): List<Slot> = synchronized(slots) { slots.toList() }
+
+        fun add(ctx: Context, pageUrl: String, ua: String) {
+            ctx.startForegroundService(Intent(ctx, RecordService::class.java).setAction(ACTION_ADD)
+                .putExtra("url", pageUrl).putExtra("ua", ua))
         }
 
-        fun stop(ctx: Context) {
-            ctx.startService(Intent(ctx, RecordService::class.java).setAction(ACTION_STOP))
+        fun stopOne(ctx: Context, id: Int) {
+            ctx.startService(Intent(ctx, RecordService::class.java).setAction(ACTION_STOP_ONE).putExtra("id", id))
+        }
+
+        fun stopAll(ctx: Context) {
+            ctx.startService(Intent(ctx, RecordService::class.java).setAction(ACTION_STOP_ALL))
+        }
+
+        fun resume(ctx: Context) {
+            ctx.startForegroundService(Intent(ctx, RecordService::class.java).setAction(ACTION_RESUME))
+        }
+
+        // ----- 이어서 녹화할 목록 저장 -----
+        private fun prefs(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
+
+        /** 저장된 '진행 중이던 녹화' (앱·폰이 꺼지기 전) */
+        fun savedJobs(ctx: Context): List<Pair<String, String>> = try {
+            val a = JSONArray(prefs(ctx).getString("activeJobs", "[]"))
+            (0 until a.length()).map { val o = a.getJSONObject(it); o.getString("url") to o.optString("ua") }
+        } catch (e: Exception) { emptyList() }
+
+        fun clearSaved(ctx: Context) = prefs(ctx).edit().remove("activeJobs").apply()
+
+        private fun saveJobs(ctx: Context) {
+            val a = JSONArray()
+            list().filter { !it.userStopped }.forEach { a.put(JSONObject().put("url", it.pageUrl).put("ua", it.ua)) }
+            prefs(ctx).edit().putString("activeJobs", a.toString()).apply()
+        }
+
+        fun slotEnded(s: Slot) {
+            val svc = instance
+            synchronized(slots) { slots.remove(s) }
+            if (svc != null) {
+                if (!svc.shuttingDown) saveJobs(svc)
+                svc.updateNotification()
+                if (!running) svc.finishService()
+            }
+            onChange?.invoke()
         }
     }
 
-    @Volatile private var stopFlag = false
     private var wake: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
-    private var startedAt = 0L
+    private var netCb: ConnectivityManager.NetworkCallback? = null
     private var lastNotify = 0L
+    @Volatile var shuttingDown = false
+    private val ticker = android.os.Handler(android.os.Looper.getMainLooper())
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+    }
 
     private fun notification(text: String, ongoing: Boolean): Notification {
         val nm = getSystemService(NotificationManager::class.java)
@@ -75,126 +125,127 @@ class RecordService : Service() {
         }
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = list().size
         val b = Notification.Builder(this, CH)
             .setSmallIcon(R.drawable.ic_notify)
-            .setContentTitle(if (ongoing) "녹화 중" else "라이브 녹화")
-            .setContentText(text)
+            .setContentTitle(if (ongoing) "녹화 ${n}개" else "라이브 녹화")
+            .setContentText(text.lineSequence().firstOrNull() ?: "")
+            .setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(open)
             .setOngoing(ongoing)
             .setOnlyAlertOnce(true)
         if (ongoing) {
             val stop = PendingIntent.getService(this, 1,
-                Intent(this, RecordService::class.java).setAction(ACTION_STOP),
+                Intent(this, RecordService::class.java).setAction(ACTION_STOP_ALL),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-            b.addAction(Notification.Action.Builder(null, "녹화 중지", stop).build())
+            b.addAction(Notification.Action.Builder(null, "모두 중지", stop).build())
         }
         return b.build()
     }
 
-    private fun notifyText(text: String, ongoing: Boolean = true) {
-        getSystemService(NotificationManager::class.java).notify(NID, notification(text, ongoing))
+    fun updateNotification() {
+        val now = System.currentTimeMillis()
+        if (now - lastNotify < 1500) return
+        lastNotify = now
+        val l = list()
+        status = l.joinToString("\n") { "${it.id}. ${it.host} — ${it.summary()}" }
+        if (l.isNotEmpty()) getSystemService(NotificationManager::class.java).notify(NID, notification(status, true))
+        onChange?.invoke()
+    }
+
+    private fun ensureForeground() {
+        val n = notification("준비 중…", true)
+        if (Build.VERSION.SDK_INT >= 34) startForeground(NID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        else startForeground(NID, n)
+        if (wake == null) {
+            wake = getSystemService(PowerManager::class.java)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "liverec:rec").apply { acquire(24 * 3600 * 1000L) }
+            @Suppress("DEPRECATION")
+            wifi = (applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager)
+                .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "liverec:wifi").apply { acquire() }
+        }
+        if (netCb == null) {
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    ticker.postDelayed({ list().forEach { it.onNetworkChanged() } }, 1500)
+                }
+            }
+            try { getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(cb); netCb = cb } catch (_: Exception) {}
+        }
+        // 3초마다 알림 갱신
+        ticker.removeCallbacksAndMessages(null)
+        ticker.post(object : Runnable {
+            override fun run() { lastNotify = 0; updateNotification(); if (running) ticker.postDelayed(this, 3000) }
+        })
+    }
+
+    private fun addSlot(url: String, ua: String): Boolean {
+        synchronized(slots) {
+            if (slots.size >= MAX_SLOTS) { addLog("동시 녹화는 최대 ${MAX_SLOTS}개예요"); return false }
+            if (slots.any { it.pageUrl == url }) { addLog("이미 녹화 중인 방송이에요"); return false }
+            val s = Slot(this, nextId++, url, ua) { updateNotification() }
+            slots.add(s)
+            s.start()
+        }
+        saveJobs(this)
+        addLog("녹화 추가: ${maskUrl(url)}")
+        return true
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopFlag = true
-            addLog("중지 요청")
-            if (!running) stopSelf()
-            return START_NOT_STICKY
+        shuttingDown = false
+        when (intent?.action) {
+            ACTION_STOP_ALL -> {
+                list().forEach { it.stop() }
+                clearSaved(this)
+                addLog("모두 중지")
+                if (!running) finishService()
+                return START_NOT_STICKY
+            }
+            ACTION_STOP_ONE -> {
+                val id = intent.getIntExtra("id", -1)
+                list().firstOrNull { it.id == id }?.stop()
+                return START_STICKY
+            }
+            ACTION_ADD -> {
+                ensureForeground()
+                addSlot(intent.getStringExtra("url") ?: return START_STICKY, intent.getStringExtra("ua") ?: "")
+            }
+            ACTION_RESUME -> {
+                ensureForeground()
+                savedJobs(this).forEach { (u, ua) -> addSlot(u, ua) }
+            }
+            null -> {
+                // 시스템이 꺼진 서비스를 다시 살림 → 직접 끈 게 아니므로 이어서 녹화
+                ensureForeground()
+                val jobs = savedJobs(this)
+                if (jobs.isNotEmpty()) addLog("앱이 다시 살아남 → 녹화 ${jobs.size}개 이어서 진행")
+                jobs.forEach { (u, ua) -> addSlot(u, ua) }
+            }
         }
-        val src = pending
-        val n = notification("준비 중…", true)
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            startForeground(NID, n)
-        }
-        if (src == null || running) return START_NOT_STICKY
-        pending = null
-        running = true
-        codecInfo = ""
-        stopFlag = false
-        startedAt = System.currentTimeMillis()
-
-        wake = getSystemService(PowerManager::class.java)
-            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "liverec:rec").apply { acquire(24 * 3600 * 1000L) }
-        @Suppress("DEPRECATION")
-        wifi = (applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager)
-            .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "liverec:wifi").apply { acquire() }
-
-        Thread { record(src) }.start()
-        return START_NOT_STICKY
+        if (!running && intent?.action != ACTION_ADD) finishService()
+        return START_STICKY
     }
 
-    private fun record(src: Captured) {
-        var uri: Uri? = null
-        var path: String? = null
-        var lastScan = 0L
-        var fileName = ""
-        val follow = pendingFollow
-        addLog(if (follow) "방식: 재생기 따라 저장" else "주소: ${maskUrl(src.url)}")
-        val openOut: (String) -> java.io.OutputStream = { ext ->
-            val host = hostOf(src.pageUrl).removePrefix("www.").replace(Regex("[^A-Za-z0-9.-]"), "_")
-            val time = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.KOREA).format(Date())
-            fileName = "${host}_$time.$ext"
-            val (u, pth, out) = Saver.createLive(this, fileName, if (ext == "mp4") "video/mp4" else "video/mp2t")
-            uri = u
-            path = pth
-            addLog("저장 파일: ${Saver.FOLDER}/$fileName" + if (pth == null) " (끝날 때 보임)" else "")
-            out
-        }
-        val onCodec: (String?, Boolean) -> Unit = { mime, fromPlaylist ->
-            codecInfo = when {
-                Codec.isHevc(mime) -> "H.265 방송 — 그대로 녹화"
-                Codec.isEfficient(mime) -> "${Codec.label(mime)} 방송 — 그대로 녹화 (H.265보다 압축이 좋아 변환 필요 없음)"
-                mime == null -> "코덱 확인 안 됨 — 녹화 후 파일 목록에서 확인"
-                else -> "H.265 아님(${Codec.label(mime)}) — 녹화 후 파일 목록에서 H.265 변환 가능"
-            }
-            addLog("코덱: " + Codec.label(mime) + if (fromPlaylist) " (재생목록 정보)" else "")
-            onChange?.invoke()
-        }
-        val probe: (ByteArray, String) -> String? = { data, ext -> Codec.probeBytes(this, data, ext) }
-        val progress: (Long, Int) -> Unit = { bytes, segs ->
-            val now = System.currentTimeMillis()
-            val pth = path
-            if (pth != null && now - lastScan > 60_000) { lastScan = now; Saver.scan(this, pth) }
-            if (now - lastNotify > 3000) {
-                lastNotify = now
-                val min = (now - startedAt) / 60000
-                status = "녹화 중 · ${min}분 · ${bytes / 1024 / 1024}MB · 조각 ${segs}개" + if (codecInfo.isNotEmpty()) "\n$codecInfo" else ""
-                notifyText(status)
-                onChange?.invoke()
-            }
-        }
-        var totalBytes = 0L
-        try {
-            if (follow) {
-                val rec = FollowRecorder(Sniff.streamId(src.url), pendingUa, { addLog(it) }, { stopFlag }, openOut, progress, onCodec, probe)
-                try { rec.run() } finally { totalBytes = rec.bytes }
-                addLog("녹화 끝: ${rec.endReason}")
-            } else {
-                val rec = HlsRecorder(src, pendingUa, log = { addLog(it) }, stopped = { stopFlag }, openOut = openOut,
-                    progress = progress, onCodec = onCodec, probe = probe, siblings = pendingSiblings)
-                try { rec.run() } finally { totalBytes = rec.bytes }
-                addLog("녹화 끝: ${rec.endReason}")
-            }
-        } catch (e: DrmException) {
-            addLog(e.message ?: "DRM")
-        } catch (e: Exception) {
-            addLog("녹화 실패: ${e.javaClass.simpleName} ${e.message}")
-        }
-        uri?.let { Saver.finish(this, it) }
-        path?.let { Saver.scan(this, it) }
-        val mb = totalBytes / 1024 / 1024
-        val codecLine = if (codecInfo.isNotEmpty()) "\n$codecInfo" else ""
-        status = if (totalBytes > 0) "저장됨: ${Saver.FOLDER}/$fileName (${mb}MB)$codecLine" else "저장된 영상 없음 — 기록을 눌러 복사해 보내 주세요"
-        addLog(status)
-        running = false
+    fun finishService() {
+        ticker.removeCallbacksAndMessages(null)
         try { wake?.release() } catch (_: Exception) {}
         try { wifi?.release() } catch (_: Exception) {}
+        wake = null; wifi = null
+        netCb?.let { try { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(it) } catch (_: Exception) {} }
+        netCb = null
         stopForeground(STOP_FOREGROUND_DETACH)
-        notifyText(status, false)
+        status = "녹화 없음"
+        getSystemService(NotificationManager::class.java).notify(NID, notification("녹화가 모두 끝났어요", false))
         onChange?.invoke()
         stopSelf()
+    }
+
+    override fun onDestroy() {
+        // 시스템이 끄는 경우: 저장 목록은 남겨 두고(이어서 녹화), 파일만 안전하게 닫는다
+        shuttingDown = true
+        list().forEach { it.halt() }
+        instance = null
+        super.onDestroy()
     }
 }

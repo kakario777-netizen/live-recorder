@@ -129,6 +129,7 @@ class MainActivity : Activity() {
         if (start != null) { urlBox.setText(start); web.loadUrl(start) }
         refresh()
         updater.check(silent = true)
+        askResume()
     }
 
     override fun onResume() {
@@ -301,113 +302,118 @@ class MainActivity : Activity() {
         val others = Sniff.list().size - n
         info.text = when {
             RecordService.running -> RecordService.status.ifBlank { "녹화 준비 중…" }
-            RecordService.status.isNotBlank() -> RecordService.status
             n > 0 || Sniff.latestSegAny() != null -> "영상 찾음 — 녹화를 누르세요"
             others > 0 -> "다른 형식 영상 주소 ${others}개 (진단 저장 후 보내 주세요)"
             else -> "방송을 재생하면 영상 주소를 자동으로 찾아요"
         }
-        recBtn.text = if (RecordService.running) "■ 중지" else "● 녹화"
+        recBtn.text = if (RecordService.running) "녹화 ${RecordService.list().size}개" else "● 녹화"
     }
 
     private fun onRecord() {
-        if (RecordService.running) {
-            RecordService.stop(this)
-            return
-        }
-        val list = Sniff.list().filter { it.kind == "hls" }
-        if (list.isEmpty() && Sniff.latestSegAny() == null) {
-            Toast.makeText(this, "아직 영상 주소를 못 찾았어요. 방송을 먼저 재생해 주세요.", Toast.LENGTH_LONG).show()
-            return
-        }
-        askBattery()
-        pickWithThumbnails(list)
+        if (RecordService.running) showSlots() else addRecording()
     }
 
-    /** 녹화할 영상 고르기 — 주소마다 실제 화면(썸네일)과 화질·코덱을 보여 준다 */
-    private fun pickWithThumbnails(list: List<Captured>) {
-        val ua = web.settings.userAgentString
-        val siblings = Sniff.list().filter { it.kind == "hls" }
-        // 대표 목록(master)은 뒤로, 같은 종류끼리는 최근 것 먼저
-        val sorted = list.sortedBy { if (it.url.contains("master", true)) 1 else 0 }
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(4), dp(8), dp(4)) }
+    /** 녹화 현황: 칸마다 상태와 중지 버튼, 아래에 '이 방송 추가' */
+    private fun showSlots() {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(8)) }
         lateinit var dlg: AlertDialog
-        // 맨 위: 재생기 따라 저장 (재생기가 실제로 받는 조각을 그대로 저장 — 재생목록이 막힌 사이트용)
-        Sniff.latestSegAny()?.let { seg ->
-            val id = Sniff.streamId(seg.url)
-            val row = LinearLayout(this).apply {
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(6), dp(8), dp(6), dp(8))
-                isClickable = true
-                setBackgroundColor(Color.parseColor("#FFF3E0"))
-            }
-            val img = android.widget.ImageView(this).apply {
-                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
-                setBackgroundColor(Color.parseColor("#E0E0E0"))
-            }
-            row.addView(img, LinearLayout.LayoutParams(dp(128), dp(72)))
-            val tv = TextView(this).apply {
+        RecordService.list().forEach { sl ->
+            val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(6), 0, dp(6)) }
+            row.addView(TextView(this).apply {
+                text = "${sl.id}. ${sl.host}\n${sl.summary()}"
                 textSize = 13f
                 setTextColor(Color.parseColor("#222222"))
-                setPadding(dp(10), 0, 0, 0)
-                text = "▶ 재생기 따라 저장 (추천)\n화면 불러오는 중…"
-            }
-            row.addView(tv, LinearLayout.LayoutParams(0, -2, 1f))
-            row.setOnClickListener { dlg.dismiss(); startRec(seg, siblings, follow = true) }
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(btn("중지", Color.parseColor("#D32F2F")) {
+                AlertDialog.Builder(this).setMessage("${sl.id}번 녹화를 멈출까요? 지금까지 녹화한 건 저장돼요.")
+                    .setPositiveButton("중지") { _, _ -> RecordService.stopOne(this, sl.id); dlg.dismiss() }
+                    .setNegativeButton("취소", null).show()
+            })
             box.addView(row)
-            Thread {
-                val r = Preview.fromPlayer(this, id, ua)
-                runOnUiThread {
-                    tv.text = "▶ 재생기 따라 저장 (추천)\n${r.text}\n앱 화면에서 방송이 재생 중이어야 해요"
-                    if (!r.ok) tv.setTextColor(Color.parseColor("#C62828"))
-                    r.bitmap?.let { img.setImageBitmap(it) }
-                }
-            }.start()
-        }
-        sorted.forEach { c ->
-            val row = LinearLayout(this).apply {
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(6), dp(8), dp(6), dp(8))
-                isClickable = true
-                setBackgroundResource(android.R.drawable.list_selector_background)
-            }
-            val img = android.widget.ImageView(this).apply {
-                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
-                setBackgroundColor(Color.parseColor("#E0E0E0"))
-            }
-            row.addView(img, LinearLayout.LayoutParams(dp(128), dp(72)))
-            val tv = TextView(this).apply {
-                textSize = 13f
-                setTextColor(Color.parseColor("#222222"))
-                setPadding(dp(10), 0, 0, 0)
-                val name = c.url.substringBefore('?').substringAfterLast('/')
-                text = "$name\n화면 불러오는 중…"
-            }
-            row.addView(tv, LinearLayout.LayoutParams(0, -2, 1f))
-            row.setOnClickListener { dlg.dismiss(); startRec(c, siblings) }
-            box.addView(row)
-            Thread {
-                val r = Preview.make(this, c, ua, siblings)
-                runOnUiThread {
-                    val name = c.url.substringBefore('?').substringAfterLast('/')
-                    tv.text = "$name\n${r.text}"
-                    if (!r.ok) tv.setTextColor(Color.parseColor("#C62828"))
-                    r.bitmap?.let { img.setImageBitmap(it) }
-                }
-            }.start()
         }
         dlg = AlertDialog.Builder(this)
-            .setTitle("어떤 영상을 녹화할까요?")
-            .setMessage("화면이 나온 항목을 고르면 돼요")
+            .setTitle("녹화 현황 (${RecordService.list().size}/${RecordService.MAX_SLOTS})")
             .setView(ScrollView(this).apply { addView(box) })
-            .setNegativeButton("취소", null)
+            .setPositiveButton("이 방송 추가") { _, _ -> addRecording() }
+            .setNeutralButton("모두 중지") { _, _ ->
+                AlertDialog.Builder(this).setMessage("모든 녹화를 멈출까요?")
+                    .setPositiveButton("모두 중지") { _, _ -> RecordService.stopAll(this) }
+                    .setNegativeButton("취소", null).show()
+            }
+            .setNegativeButton("닫기", null)
             .show()
     }
 
-    private fun startRec(c: Captured, siblings: List<Captured>, follow: Boolean = false) {
-        RecordService.status = ""
-        RecordService.start(this, c, web.settings.userAgentString, siblings, follow)
-        Toast.makeText(this, "녹화를 시작했어요. 화면을 꺼도 계속 저장돼요.", Toast.LENGTH_LONG).show()
-        refresh()
+    /** 지금 보고 있는 방송 페이지를 숨은 재생기로 녹화 추가 */
+    private fun addRecording() {
+        val page = web.url ?: currentPage
+        if (page.isBlank() || !page.startsWith("http")) {
+            Toast.makeText(this, "먼저 방송 페이지를 열어 주세요", Toast.LENGTH_LONG).show(); return
+        }
+        if (RecordService.list().size >= RecordService.MAX_SLOTS) {
+            Toast.makeText(this, "동시 녹화는 최대 ${RecordService.MAX_SLOTS}개예요", Toast.LENGTH_LONG).show(); return
+        }
+        askBattery()
+        if (!Settings.canDrawOverlays(this) && !prefs.getBoolean("askedOverlay", false)) {
+            prefs.edit().putBoolean("askedOverlay", true).apply()
+            AlertDialog.Builder(this)
+                .setTitle("화면을 꺼도 녹화되게 하려면")
+                .setMessage("'다른 앱 위에 표시'를 허용해 주세요.\n눈에 안 보이는 창으로 재생을 유지해서, 앱을 내리거나 화면을 꺼도 녹화가 이어져요.\n허용하고 돌아와서 녹화를 다시 눌러 주세요.")
+                .setPositiveButton("허용하러 가기") { _, _ ->
+                    try { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) } catch (_: Exception) {}
+                }
+                .setNegativeButton("그냥 녹화") { _, _ -> confirmAdd(page) }
+                .show()
+            return
+        }
+        confirmAdd(page)
+    }
+
+    private fun confirmAdd(page: String) {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), 0) }
+        val img = android.widget.ImageView(this).apply {
+            scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+            setBackgroundColor(Color.parseColor("#E0E0E0"))
+        }
+        box.addView(img, LinearLayout.LayoutParams(-1, dp(160)))
+        val tv = TextView(this).apply {
+            textSize = 13f
+            setPadding(0, dp(8), 0, 0)
+            text = "${hostOf(page)}\n화면 불러오는 중…"
+        }
+        box.addView(tv)
+        val ua = web.settings.userAgentString
+        AlertDialog.Builder(this)
+            .setTitle("이 방송을 녹화할까요?")
+            .setView(box)
+            .setPositiveButton("녹화 시작") { _, _ ->
+                RecordService.add(this, page, ua)
+                Toast.makeText(this, "녹화를 추가했어요. 720p가 잡히면 시작하고, 화면을 꺼도 계속돼요.", Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("취소", null)
+            .show()
+        val seg = Sniff.latestSegAny()
+        if (seg == null) { tv.text = "${hostOf(page)}\n(방송을 재생하면 미리보기가 나와요 — 녹화는 그냥 시작해도 돼요)"; return }
+        Thread {
+            val r = Preview.fromPlayer(this, Sniff.streamId(seg.url), ua)
+            runOnUiThread {
+                tv.text = "${hostOf(page)}\n${r.text}"
+                r.bitmap?.let { img.setImageBitmap(it) }
+            }
+        }.start()
+    }
+
+    /** 앱을 켰는데 진행 중이던 녹화가 꺼져 있으면(폰 재부팅 등) 확인 후 재개 */
+    private fun askResume() {
+        if (RecordService.running) return
+        val jobs = RecordService.savedJobs(this)
+        if (jobs.isEmpty()) return
+        AlertDialog.Builder(this)
+            .setTitle("녹화 중이던 방송 ${jobs.size}개가 있어요")
+            .setMessage(jobs.joinToString("\n") { "- " + hostOf(it.first) } + "\n\n이어서 녹화할까요? (새 파일로 저장돼요)")
+            .setPositiveButton("재개") { _, _ -> RecordService.resume(this) }
+            .setNegativeButton("안 함") { _, _ -> RecordService.clearSaved(this) }
+            .show()
     }
 
     /** 삼성 절전 기능이 녹화를 끊지 않도록 한 번 요청 */
