@@ -716,6 +716,13 @@ class Slot(
                         openChat(path, true)
                         RecordService.fileOpened()
                         if (head == null && mp4) head = lastInit[track]?.let { fetch(it) }
+                        // 파일 앞의 시작 정보와 같으면 다시 쓰지 않음 (중간에 또 들어가면 동영상 앱이 거기서 멈춤)
+                        val hd = head
+                        if (mp4 && hd != null && Mp4.sameInit(f, hd)) {
+                            head = null
+                            curTrack = track
+                            log("시작 정보가 같아서 그대로 이어 붙임")
+                        }
                     }
                     if (out == null) {
                         // 시작 전: 720p 이상이 나올 때까지 기다림 (1분 넘으면 그때 화질로 시작)

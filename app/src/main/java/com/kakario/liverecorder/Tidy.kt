@@ -34,6 +34,8 @@ object Tidy {
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
     private val holder = ProgressHolder()
+    /** 중복 시작 정보를 뺀 임시본 (정리가 실패해도 이걸로 원본을 바꿔 둠) */
+    @Volatile private var dedupUsed: File? = null
 
     fun busy(): Boolean = current != null || synchronized(queue) { queue.isNotEmpty() }
 
@@ -105,8 +107,22 @@ object Tidy {
         val h = handler ?: return
         val workDir = File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "tidy").apply { mkdirs() }
         val out = File(workDir, job.name).also { it.delete() }
-        val input = job.path?.let { Uri.fromFile(File(it)) } ?: job.uri
-        if (input == null) { finish(ctx, job, out, false, "원본을 찾을 수 없어요"); return }
+        val orig: Uri = job.path?.let { Uri.fromFile(File(it)) } ?: job.uri
+            ?: run { finish(ctx, job, out, false, "원본을 찾을 수 없어요"); return }
+        var input: Uri = orig
+        // 먼저 중간에 중복으로 들어간 시작 정보를 빼 둔다 (이어 녹화·업데이트 지점에서 재생이 멈추던 문제)
+        val dedup = File(workDir, "dedup_" + job.name)
+        val jp = job.path
+        if (jp != null) {
+            try {
+                val n = Mp4.removeDuplicateInits(File(jp), dedup)
+                if (n > 0) {
+                    RecordService.addLog("중간에 중복된 시작 정보 ${n}개 제거: ${job.name}")
+                    input = Uri.fromFile(dedup)
+                    dedupUsed = dedup
+                } else dedup.delete()
+            } catch (e: Exception) { dedup.delete() }
+        }
         // H.264면 정리하면서 H.265로 변환 (충전 중일 때만, 하드웨어 인코더 있을 때만)
         val mime = Codec.probeUri(ctx, input)
         converting = autoH265(ctx) && mime == android.media.MediaFormat.MIMETYPE_VIDEO_AVC && Codec.phoneHasHevcEncoder()
@@ -172,8 +188,15 @@ object Tidy {
                 "정리본 저장 실패(원본 유지): ${e.message}"
             }
         } else {
-            msg = "정리 실패(원본 그대로 둠): ${job.name} $err"
+            val d = dedupUsed
+            msg = if (d != null && d.exists() && d.length() > 0) {
+                try {
+                    replace(ctx, job, d)
+                    "정리는 실패했지만 중복된 시작 정보는 빼 뒀어요(끝까지 재생됨): ${job.name} $err"
+                } catch (e: Exception) { "정리 실패(원본 그대로 둠): ${job.name} $err" }
+            } else "정리 실패(원본 그대로 둠): ${job.name} $err"
         }
+        dedupUsed?.delete(); dedupUsed = null
         out.delete()
         lastResult = msg
         RecordService.addLog(msg)
