@@ -87,6 +87,8 @@ class MainActivity : Activity() {
         top.addView(urlBox, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         top.addView(btn("이동") { go() })
         top.addView(btn("↻") { web.reload() })
+        top.addView(btn("☆") { addBookmark() })
+        top.addView(btn("★") { showBookmarks() })
         root.addView(top)
 
         loading = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100; visibility = View.GONE }
@@ -435,6 +437,91 @@ class MainActivity : Activity() {
                 r.bitmap?.let { img.setImageBitmap(it) }
             }
         }.start()
+    }
+
+    /** 지금 페이지를 즐겨찾기 — 스트리머 이름을 이름으로 추천, 고친 뒤 저장 */
+    private fun addBookmark() {
+        val page = web.url ?: currentPage
+        if (!page.startsWith("http")) { Toast.makeText(this, "먼저 방송 페이지를 열어 주세요", Toast.LENGTH_SHORT).show(); return }
+        val guess = Names.streamerFromUrl(page).ifEmpty { Names.streamerFromTitle(web.title ?: "") }.ifEmpty { Names.siteName(page) }
+        val input = EditText(this).apply {
+            setText(guess)
+            setSelectAllOnFocus(true)
+            isSingleLine = true
+            hint = "즐겨찾기 이름"
+        }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
+        box.addView(input)
+        box.addView(TextView(this).apply { text = page.take(120); textSize = 11f; setTextColor(Color.parseColor("#888888")) })
+        AlertDialog.Builder(this)
+            .setTitle(if (Bookmarks.has(this, page)) "즐겨찾기 이름 바꾸기" else "즐겨찾기 추가")
+            .setView(box)
+            .setPositiveButton("저장") { _, _ ->
+                val n = input.text.toString().trim().ifEmpty { guess }
+                Bookmarks.add(this, n, page)
+                Toast.makeText(this, "즐겨찾기에 저장했어요: $n", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("취소", null)
+            .show()
+        input.requestFocus()
+    }
+
+    /** 즐겨찾기 목록: 누르면 열기, '녹화'로 바로 녹화(방송 대기) 추가, 길게 누르면 이름 바꾸기·삭제 */
+    private fun showBookmarks() {
+        val list = Bookmarks.list(this)
+        if (list.isEmpty()) {
+            Toast.makeText(this, "즐겨찾기가 없어요. 방송 페이지에서 ☆를 눌러 추가하세요.", Toast.LENGTH_LONG).show(); return
+        }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(4), dp(8), dp(4)) }
+        lateinit var dlg: AlertDialog
+        val recUrls = RecordService.list().map { it.pageUrl }.toSet()
+        list.forEach { b ->
+            val row = LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(4), dp(6), 0, dp(6))
+                isClickable = true
+                setBackgroundResource(android.R.drawable.list_selector_background)
+            }
+            val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            texts.addView(TextView(this).apply { text = b.name; textSize = 15f; setTextColor(Color.parseColor("#222222")) })
+            texts.addView(TextView(this).apply {
+                text = (if (b.url in recUrls) "● 녹화 중 · " else "") + Names.siteName(b.url)
+                textSize = 11f
+                setTextColor(Color.parseColor(if (b.url in recUrls) "#D32F2F" else "#888888"))
+            })
+            row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+            if (b.url !in recUrls) {
+                row.addView(btn("녹화", Color.parseColor("#D32F2F")) {
+                    dlg.dismiss()
+                    if (RecordService.list().size >= RecordService.MAX_SLOTS) {
+                        Toast.makeText(this, "동시 녹화는 최대 ${RecordService.MAX_SLOTS}개예요", Toast.LENGTH_LONG).show()
+                    } else {
+                        askBattery()
+                        RecordService.add(this, b.url, web.settings.userAgentString, Names.clean(b.name))
+                        Toast.makeText(this, "${b.name} 녹화를 추가했어요 (꺼져 있으면 방송 대기)", Toast.LENGTH_LONG).show()
+                    }
+                })
+            }
+            row.setOnClickListener { dlg.dismiss(); urlBox.setText(b.url); Sniff.clear(); web.loadUrl(b.url) }
+            row.setOnLongClickListener {
+                val input = EditText(this).apply { setText(b.name); isSingleLine = true }
+                AlertDialog.Builder(this)
+                    .setTitle("즐겨찾기 편집")
+                    .setView(LinearLayout(this).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(input, LinearLayout.LayoutParams(-1, -2)) })
+                    .setPositiveButton("이름 저장") { _, _ -> Bookmarks.rename(this, b.url, input.text.toString().trim().ifEmpty { b.name }); dlg.dismiss(); showBookmarks() }
+                    .setNeutralButton("삭제") { _, _ -> Bookmarks.remove(this, b.url); dlg.dismiss(); showBookmarks() }
+                    .setNegativeButton("취소", null)
+                    .show()
+                true
+            }
+            box.addView(row)
+        }
+        dlg = AlertDialog.Builder(this)
+            .setTitle("즐겨찾기 (${list.size})")
+            .setMessage("누르면 열기 · 길게 누르면 이름 바꾸기·삭제")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setNegativeButton("닫기", null)
+            .show()
     }
 
     /** 앱을 켰는데 진행 중이던 녹화가 꺼져 있으면(폰 재부팅 등) 확인 후 재개 */
