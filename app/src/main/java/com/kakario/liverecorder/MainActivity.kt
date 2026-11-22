@@ -113,9 +113,7 @@ class MainActivity : Activity() {
         loading = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100; visibility = View.GONE }
         root.addView(loading, LinearLayout.LayoutParams(-1, dp(3)))
 
-        web = WebView(this)
         webFrame = FrameLayout(this)
-        webFrame.addView(web, FrameLayout.LayoutParams(-1, -1))
         root.addView(webFrame, LinearLayout.LayoutParams(-1, 0, 1f))
 
         // 맨 아래: 브라우저 버튼 (뒤로 · 앞으로 · 홈 · 맨 위 · 공유)
@@ -135,6 +133,8 @@ class MainActivity : Activity() {
             }
         }, LinearLayout.LayoutParams(0, -2, 1f))
         nav.addView(btn("⇡ 맨 위") { web.evaluateJavascript("window.scrollTo(0,0)", null); web.scrollTo(0, 0) }, LinearLayout.LayoutParams(0, -2, 1f))
+        tabBtn = btn("탭 1") { showTabs() }
+        nav.addView(tabBtn, LinearLayout.LayoutParams(0, -2, 1f))
         nav.addView(btn("공유") {
             val u = web.url ?: return@btn
             startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, u), "주소 공유"))
@@ -143,7 +143,6 @@ class MainActivity : Activity() {
 
         setContentView(root)
         root.fitSystemBars()
-        setupWeb()
 
         Sniff.listener = { runOnUiThread { refresh() } }
         RecordService.onChange = { runOnUiThread { refresh() } }
@@ -153,8 +152,7 @@ class MainActivity : Activity() {
         }
 
         val shared = sharedUrl(intent)
-        val start = shared ?: prefs.getString("last", null)
-        if (start != null) { urlBox.setText(start); web.loadUrl(start) }
+        restoreTabs(shared ?: if (prefs.getString("tabs", null) == null) prefs.getString("last", null) else null)
         refresh()
         updater.check(silent = true)
         askResume()
@@ -171,6 +169,7 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         super.onStop()
+        saveTabs()
         // 앱을 나갈 때 받아 둔 업데이트 설치 (녹화·변환 중이면 안 함)
         if (!isChangingConfigurations && !innerNav) updater.installOnLeave()
         innerNav = false
@@ -181,7 +180,7 @@ class MainActivity : Activity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        sharedUrl(intent)?.let { urlBox.setText(it); go() }
+        sharedUrl(intent)?.let { newTab(it) }
     }
 
     private fun sharedUrl(i: Intent?): String? {
@@ -289,10 +288,10 @@ class MainActivity : Activity() {
         CookieManager.getInstance().flush()
     }
 
-    private fun setupWeb() {
+    private fun setupWeb(w: WebView) {
         CookieManager.getInstance().setAcceptCookie(true)
-        configure(web)
-        web.webViewClient = object : WebViewClient() {
+        configure(w)
+        w.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, req: WebResourceRequest): WebResourceResponse? {
                 sniff(req)
                 return null
@@ -310,18 +309,111 @@ class MainActivity : Activity() {
             }
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                if (view !== web) return
                 currentPage = url
                 urlBox.setText(url)
             }
 
             override fun onPageFinished(view: WebView, url: String) {
-                currentPage = url
                 if (url.startsWith("http")) Quality.remember(this@MainActivity, Names.siteName(url))
-                prefs.edit().putString("last", url).apply()
                 CookieManager.getInstance().flush()
+                if (view !== web) return
+                currentPage = url
+                prefs.edit().putString("last", url).apply()
             }
         }
-        web.webChromeClient = chrome
+        w.webChromeClient = chrome
+    }
+
+    // ---------- 탭 ----------
+
+    private val tabs = ArrayList<WebView>()
+    private lateinit var tabBtn: Button
+
+    private fun newTab(url: String?, switchTo: Boolean = true): WebView {
+        val w = WebView(this)
+        setupWeb(w)
+        tabs.add(w)
+        webFrame.addView(w, 0, FrameLayout.LayoutParams(-1, -1))
+        if (switchTo || tabs.size == 1) switchTab(w) else w.visibility = View.GONE
+        if (url != null) w.loadUrl(url)
+        updateTabBtn()
+        return w
+    }
+
+    private fun switchTab(w: WebView) {
+        tabs.forEach { it.visibility = if (it === w) View.VISIBLE else View.GONE }
+        web = w
+        currentPage = w.url ?: ""
+        urlBox.setText(w.url ?: "")
+        Sniff.clear()
+        updateTabBtn()
+    }
+
+    private fun closeTab(w: WebView) {
+        val i = tabs.indexOf(w)
+        if (i < 0) return
+        tabs.removeAt(i)
+        webFrame.removeView(w)
+        w.destroy()
+        if (tabs.isEmpty()) newTab(prefs.getString("home", null))
+        else if (w === web) switchTab(tabs[minOf(i, tabs.size - 1)])
+        updateTabBtn()
+    }
+
+    private fun updateTabBtn() { if (::tabBtn.isInitialized) tabBtn.text = "탭 ${tabs.size}" }
+
+    private fun saveTabs() {
+        val a = org.json.JSONArray()
+        tabs.forEach { a.put(it.url ?: "") }
+        prefs.edit().putString("tabs", a.toString()).putInt("tabIndex", tabs.indexOf(web).coerceAtLeast(0)).apply()
+    }
+
+    /** 앱을 켤 때: 지난번에 열어 둔 탭들 복원 */
+    private fun restoreTabs(start: String?) {
+        val saved = try { org.json.JSONArray(prefs.getString("tabs", "[]")) } catch (e: Exception) { org.json.JSONArray() }
+        val urls = (0 until saved.length()).map { saved.optString(it) }.filter { it.startsWith("http") }
+        if (urls.isEmpty()) { newTab(start); return }
+        val idx = prefs.getInt("tabIndex", 0).coerceIn(0, urls.size - 1)
+        urls.forEachIndexed { i, u -> newTab(u, switchTo = i == idx) }
+        if (start != null && start != urls.getOrNull(idx)) newTab(start)
+    }
+
+    /** 탭 목록: 누르면 이동, ✕로 닫기, '+ 새 탭' */
+    private fun showTabs() {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(4), dp(8), dp(4)) }
+        lateinit var dlg: AlertDialog
+        tabs.forEach { w ->
+            val row = LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(4), dp(6), 0, dp(6))
+                isClickable = true
+                setBackgroundResource(android.R.drawable.list_selector_background)
+                setOnClickListener { dlg.dismiss(); switchTab(w) }
+            }
+            val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            texts.addView(TextView(this).apply {
+                text = (if (w === web) "● " else "") + (w.title?.takeIf { it.isNotBlank() } ?: "새 탭")
+                textSize = 14f; setTextColor(Color.parseColor(if (w === web) "#D32F2F" else "#222222"))
+                isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            texts.addView(TextView(this).apply {
+                text = w.url ?: ""; textSize = 11f; setTextColor(Color.parseColor("#888888"))
+                isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(btn("✕") { dlg.dismiss(); closeTab(w); showTabs() })
+            box.addView(row)
+        }
+        dlg = AlertDialog.Builder(this)
+            .setTitle("열린 탭 (${tabs.size})")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("+ 새 탭") { _, _ ->
+                newTab(prefs.getString("home", null))
+                urlBox.requestFocus()
+            }
+            .setNegativeButton("닫기", null)
+            .show()
     }
 
     @Volatile private var currentPage = ""
@@ -827,7 +919,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         Sniff.listener = null
         RecordService.onChange = null
-        web.destroy()
+        tabs.forEach { it.destroy() }
         super.onDestroy()
     }
 }
