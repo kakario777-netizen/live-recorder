@@ -618,6 +618,25 @@ class Slot(
                     }
                     val idle = now - lastSegAt
                     if (now - blurAt < 15_000) continue   // 흐린 화면이 계속 오는 중(티켓방) — 새로고침하지 않고 기다림
+                    // 방송이 끝났으면 파일을 닫고 바로 정리·변환·업로드 → 다음 방송은 새 파일
+                    // (방송 종료 확인 후 1분 / 이유 모르게 30분 넘게 끊김 / 티켓방은 제외)
+                    if (out != null && pauseKind != "ticket" &&
+                        ((pauseKind == "ended" && idle > STALL_MS + 60_000) || idle > NEW_FILE_AFTER_MS)) {
+                        log((if (pauseKind == "ended") "방송 종료 확인" else "${idle / 60000}분 넘게 끊김") + " → 파일 마무리 후 정리·업로드, 다음 방송은 새 파일로")
+                        closeBlurred()
+                        closeChat()
+                        try { out?.flush(); out?.close() } catch (_: Exception) {}
+                        mediaUri?.let { Saver.finish(ctx, it) }
+                        path?.let { Saver.scan(ctx, it) }
+                        if (bytes > 0) Tidy.enqueue(ctx, Tidy.Job(fileName, path, mediaUri, streamer))
+                        out = null; mediaUri = null; path = null; curTrack = null; fileName = ""
+                        bytes = 0; segs = 0; recordStartAt = 0; firstSegAt = 0; mediaMs = 0; lastWriteAt = 0
+                        written.clear(); pauseKind = ""
+                        appendUsed = true            // 다음 방송은 예전 파일에 이어 붙이지 않음
+                        RecordService.fileOpened()   // 이어 녹화용 경로 비우기
+                        setState("방송 대기")
+                        continue
+                    }
                     if (idle > STALL_MS) {
                         val everRecorded = recordStartAt > 0
                         val waitingStart = !everRecorded && firstSegAt == 0L
