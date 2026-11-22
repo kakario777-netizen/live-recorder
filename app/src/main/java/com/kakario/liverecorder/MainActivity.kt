@@ -107,6 +107,7 @@ class MainActivity : Activity() {
         root.addView(bottom)
 
         setContentView(root)
+        root.fitSystemBars()
         setupWeb()
 
         Sniff.listener = { runOnUiThread { refresh() } }

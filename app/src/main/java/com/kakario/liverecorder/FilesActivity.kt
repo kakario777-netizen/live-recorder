@@ -58,6 +58,7 @@ class FilesActivity : Activity() {
         listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(ScrollView(this).apply { addView(listBox) }, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
+        root.fitSystemBars()
 
         ConvertService.onChange = { runOnUiThread { render() } }
     }
