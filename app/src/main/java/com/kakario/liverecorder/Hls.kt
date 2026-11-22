@@ -9,7 +9,7 @@ class Key(val method: String, val uri: String?, val iv: String?, val format: Str
 
 class Segment(val seq: Long, val url: String, val key: Key?, val map: String?)
 
-class Variant(val url: String, val bandwidth: Long, val resolution: String?)
+class Variant(val url: String, val bandwidth: Long, val resolution: String?, val codecs: String?)
 
 class Playlist(
     val isMaster: Boolean,
@@ -62,7 +62,7 @@ object Hls {
                 else -> {
                     if (pendingVariant != null) {
                         val a = pendingVariant
-                        variants.add(Variant(resolveUrl(base, l), a["BANDWIDTH"]?.toLongOrNull() ?: 0, a["RESOLUTION"]))
+                        variants.add(Variant(resolveUrl(base, l), a["BANDWIDTH"]?.toLongOrNull() ?: 0, a["RESOLUTION"], a["CODECS"]))
                         pendingVariant = null
                     } else {
                         segs.add(Segment(mediaSeq + idx, resolveUrl(base, l), key, map))
@@ -92,12 +92,17 @@ class HlsRecorder(
     private val stopped: () -> Boolean,
     private val openOut: (ext: String) -> OutputStream,
     private val progress: (bytes: Long, segs: Int) -> Unit,
+    private val onCodec: (mime: String?, fromPlaylist: Boolean) -> Unit = { _, _ -> },
+    private val probe: (data: ByteArray, ext: String) -> String? = { _, _ -> null },
 ) {
     var bytes = 0L; private set
     var segCount = 0; private set
     var endReason = ""; private set
 
     private val keyCache = HashMap<String, ByteArray>()
+    private var playlistCodec: String? = null
+    private var codecChecked = false
+    private var fetchMapCache: ByteArray? = null
 
     private fun fetch(url: String, tries: Int = 3): ByteArray {
         var last: Exception? = null
@@ -136,7 +141,8 @@ class HlsRecorder(
         var pl = Hls.parse(String(first.body), first.finalUrl)
         if (pl.isMaster) {
             val best = pl.variants.maxByOrNull { it.bandwidth } ?: throw Exception("화질 목록이 비어 있어요")
-            log("화질 선택: ${best.resolution ?: "?"} (${best.bandwidth / 1000}kbps), 후보 ${pl.variants.size}개")
+            log("화질 선택: ${best.resolution ?: "?"} (${best.bandwidth / 1000}kbps), 후보 ${pl.variants.size}개" + (best.codecs?.let { ", 코덱 $it" } ?: ""))
+            Codec.fromCodecsAttr(best.codecs)?.let { playlistCodec = it }
             url = best.url
             first = Net.get(url, src, ua)
             if (first.code !in 200..299) throw Exception("화질 재생목록 받기 실패 (HTTP ${first.code})")
@@ -177,10 +183,17 @@ class HlsRecorder(
                     if (stopped()) break
                     try {
                         if (s.map != null && s.map != wroteMap) {
-                            val m = fetch(s.map); out.write(m); bytes += m.size; wroteMap = s.map
+                            val m = fetch(s.map); out.write(m); bytes += m.size; wroteMap = s.map; fetchMapCache = m
                         }
                         val data = decrypt(fetch(s.url), s)
                         out.write(data)
+                        if (!codecChecked) {
+                            codecChecked = true
+                            // 첫 조각을 직접 열어 코덱 확인, 안 되면 재생목록 정보로
+                            val head = if (s.map != null && wroteMap == s.map) (fetchMapCache ?: ByteArray(0)) + data else data
+                            val m = probe(head, ext)
+                            if (m != null) onCodec(m, false) else onCodec(playlistCodec, true)
+                        }
                         bytes += data.size
                         segCount++
                     } catch (e: InterruptedException) {

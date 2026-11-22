@@ -32,6 +32,20 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".FilesActivity"
+            android:exported="false"
+            android:label="녹화 파일" />
+
+        <service
+            android:name=".ConvertService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="video conversion" />
+        </service>
+
         <service
             android:name=".RecordService"
             android:exported="false"

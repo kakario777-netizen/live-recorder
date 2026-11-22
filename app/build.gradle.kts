@@ -40,3 +40,9 @@ android {
         jvmTarget = "17"
     }
 }
+
+dependencies {
+    // 녹화 파일을 폰 하드웨어 인코더로 H.265 변환
+    implementation("androidx.media3:media3-transformer:1.5.1")
+    implementation("androidx.media3:media3-common:1.5.1")
+}

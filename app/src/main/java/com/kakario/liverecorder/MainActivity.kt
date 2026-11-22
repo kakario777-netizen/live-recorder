@@ -101,6 +101,7 @@ class MainActivity : Activity() {
         val bottom = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), 0, dp(4), dp(4)) }
         bottom.addView(btn("진단 저장") { diagnose() }, LinearLayout.LayoutParams(0, -2, 1f))
         bottom.addView(btn("기록") { showLog() }, LinearLayout.LayoutParams(0, -2, 1f))
+        bottom.addView(btn("파일") { startActivity(Intent(this, FilesActivity::class.java)) }, LinearLayout.LayoutParams(0, -2, 1f))
         recBtn = btn("● 녹화", Color.parseColor("#D32F2F")) { onRecord() }.apply { setTypeface(null, Typeface.BOLD) }
         bottom.addView(recBtn, LinearLayout.LayoutParams(0, -2, 1.3f))
         root.addView(bottom)

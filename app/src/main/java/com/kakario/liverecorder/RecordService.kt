@@ -32,6 +32,8 @@ class RecordService : Service() {
         @Volatile var pendingUa: String = ""
         @Volatile var running = false
         @Volatile var status = ""
+        /** 지금 녹화 중인 방송의 코덱 안내 ("H.265 방송 — 그대로 녹화" 등) */
+        @Volatile var codecInfo = ""
         val log = ArrayList<String>()
         var onChange: (() -> Unit)? = null
 
@@ -108,6 +110,7 @@ class RecordService : Service() {
         if (src == null || running) return START_NOT_STICKY
         pending = null
         running = true
+        codecInfo = ""
         stopFlag = false
         startedAt = System.currentTimeMillis()
 
@@ -137,12 +140,22 @@ class RecordService : Service() {
                 uri = u
                 out
             },
+            onCodec = { mime, fromPlaylist ->
+                codecInfo = when {
+                    Codec.isHevc(mime) -> "H.265 방송 — 그대로 녹화"
+                    mime == null -> "코덱 확인 안 됨 — 녹화 후 파일 목록에서 확인"
+                    else -> "H.265 아님(${Codec.label(mime)}) — 녹화 후 파일 목록에서 H.265 변환 가능"
+                }
+                addLog("코덱: " + Codec.label(mime) + if (fromPlaylist) " (재생목록 정보)" else "")
+                onChange?.invoke()
+            },
+            probe = { data, ext -> Codec.probeBytes(this, data, ext) },
             progress = { bytes, segs ->
                 val now = System.currentTimeMillis()
                 if (now - lastNotify > 3000) {
                     lastNotify = now
                     val min = (now - startedAt) / 60000
-                    status = "녹화 중 · ${min}분 · ${bytes / 1024 / 1024}MB"
+                    status = "녹화 중 · ${min}분 · ${bytes / 1024 / 1024}MB" + if (codecInfo.isNotEmpty()) "\n$codecInfo" else ""
                     notifyText(status)
                     onChange?.invoke()
                 }
@@ -158,7 +171,8 @@ class RecordService : Service() {
         }
         uri?.let { Saver.finish(this, it) }
         val mb = rec.bytes / 1024 / 1024
-        status = if (rec.bytes > 0) "저장됨: ${Saver.FOLDER}/$fileName (${mb}MB)" else "저장된 영상 없음 — 진단 저장을 눌러 보내 주세요"
+        val codecLine = if (codecInfo.isNotEmpty()) "\n$codecInfo" else ""
+        status = if (rec.bytes > 0) "저장됨: ${Saver.FOLDER}/$fileName (${mb}MB)$codecLine" else "저장된 영상 없음 — 진단 저장을 눌러 보내 주세요"
         addLog(status)
         running = false
         try { wake?.release() } catch (_: Exception) {}
