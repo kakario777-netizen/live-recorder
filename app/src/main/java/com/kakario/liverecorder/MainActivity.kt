@@ -1038,7 +1038,7 @@ class MainActivity : Activity() {
             textSize = 13f
             text = "처음 한 번만:\n1. 아래 '스크립트 코드 복사'\n2. PC나 폰에서 script.google.com → 새 프로젝트 → 내용 전부 지우고 붙여 넣기 → 저장\n" +
                 "3. 배포 → 새 배포 → 유형 '웹 앱' → 액세스 '모든 사용자' → 배포 → 권한 허용\n4. 나온 웹 앱 주소(…/exec)를 아래 칸에 붙여 넣기 (두 폰 모두 같은 주소)\n\n" +
-                "그 뒤로는 한 폰에서 바꾸면 다른 폰이 30초 안에 알아서 받아요.\n\n지금: " + (if (CloudBm.on(this)) "연결됨 · " + CloudBm.lastResult else "연결 안 됨")
+                "그 뒤로는 한 폰에서 바꾸면 다른 폰이 30초 안에 알아서 받아요.\n\n지금: " + (if (CloudBm.on(this@MainActivity)) "연결됨 · " + CloudBm.lastResult else "연결 안 됨")
         })
         val et = EditText(this).apply { hint = "https://script.google.com/macros/s/…/exec"; setText(CloudBm.url(this@MainActivity)); isSingleLine = true; textSize = 13f }
         box.addView(et)
