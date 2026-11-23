@@ -28,12 +28,12 @@ import java.util.Locale
 class RecordService : Service() {
 
     companion object {
-        /** 동시에 실제로 영상을 받는 최대 개수 (등록·방송 대기는 제한 없음) */
-        const val MAX_SLOTS = 10
+        /** 개수 제한은 없음(속도 한도로만 제한). 폰 보호용 안전 상한만 둠 */
+        const val MAX_SLOTS = 30
         /** 전체 받기 속도 한도: 초당 7.5MB */
         const val MAX_RATE = 7_500_000L
 
-        /** 새 방송 녹화를 시작해도 되는지: 받는 중 10개 미만 + 속도 여유(한 개 약 0.6MB/s 예상) */
+        /** 새 방송 녹화를 시작해도 되는지: 전체 속도 7.5MB/s 안에 여유가 있으면 (한 개 약 0.6MB/s 예상) */
         fun canStart(s: Slot): Boolean {
             val others = list().filter { it !== s }
             if (others.count { it.isDownloading } >= MAX_SLOTS) return false
@@ -41,6 +41,8 @@ class RecordService : Service() {
         }
 
         fun totalRate(): Long = list().sumOf { it.rateBps() }
+        /** 상태 표시용: "받는 중 3개 · 2.4/7.5MB/s" */
+        fun rateText(): String = String.format("%.1f/%.1fMB/s", totalRate() / 1_000_000.0, MAX_RATE / 1_000_000.0)
         const val ACTION_STOP_ALL = "stop_all"
         const val ACTION_ADD = "add"
         const val ACTION_STOP_ONE = "stop_one"
@@ -198,7 +200,7 @@ class RecordService : Service() {
         val tidyLine = Tidy.current?.let { "정리 중… ${Tidy.percent}% — ${it.name}" }
         val upLine = Uploader.current?.let { "업로드 중… ${Uploader.percent}% — ${it.name}" }
             ?: Tidy.waitingCount().takeIf { it > 0 }?.let { "충전 대기 ${it}개 (충전기를 꽂으면 H.265 변환 후 업로드)" }
-        val head = if (l.isNotEmpty()) "받는 중 ${l.count { it.isDownloading }}/$MAX_SLOTS · 등록 ${l.size}개 · ${totalRate() / 1024}KB/s" else null
+        val head = if (l.isNotEmpty()) "받는 중 ${l.count { it.isDownloading }}개 · ${rateText()} · 등록 ${l.size}개" else null
         status = (listOfNotNull(head) + l.map { "${it.id}. ${it.streamer.ifEmpty { it.host }} — ${it.summary()}" } + listOfNotNull(tidyLine, upLine)).joinToString("\n")
         if (l.isEmpty() && !Tidy.busy() && !Uploader.busy() && Sync.isRecorder(this)) status = "녹화 담당 폰 · 원격 명령 대기 중"
         if (l.isNotEmpty() || Tidy.busy() || Uploader.busy() || Sync.isRecorder(this)) getSystemService(NotificationManager::class.java).notify(NID, notification(status, true))

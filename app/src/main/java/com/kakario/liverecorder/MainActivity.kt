@@ -478,7 +478,7 @@ class MainActivity : Activity() {
                 val wait = l.count { it.state == "방송 대기" || it.state == "순서 대기" }
                 val paused = l.count { it.state == "일시정지" }
                 val mb = l.sumOf { it.bytes } / 1024 / 1024
-                "받는 중 ${l.count { it.isDownloading }}/${RecordService.MAX_SLOTS} · 녹화 $rec · 대기 $wait" +
+                "받는 중 ${l.count { it.isDownloading }}개 · ${RecordService.rateText()} · 대기 $wait" +
                     (if (paused > 0) " · 일시정지 $paused" else "") + " · ${RecordService.totalRate() / 1024}KB/s · ${mb}MB  ›"
             }
             n > 0 || Sniff.latestSegAny() != null -> "영상 찾음 — 녹화를 누르세요"
@@ -581,7 +581,7 @@ class MainActivity : Activity() {
         fun update() {
             val l = RecordService.list()
             if (l.map { it.id }.toSet() != rows.keys) build()
-            head.text = "받는 중 ${l.count { it.isDownloading }}/${RecordService.MAX_SLOTS} · 등록 ${l.size} · ${RecordService.totalRate() / 1024}KB/s · 합계 ${l.sumOf { it.bytes } / 1024 / 1024}MB"
+            head.text = "받는 중 ${l.count { it.isDownloading }}개 · ${RecordService.rateText()} · 등록 ${l.size} · 합계 ${l.sumOf { it.bytes } / 1024 / 1024}MB"
             l.forEach { sl -> rows[sl.id]?.text = "${sl.id}. ${sl.streamer.ifEmpty { sl.host }}\n${sl.summary()}" }
         }
         build(); update()

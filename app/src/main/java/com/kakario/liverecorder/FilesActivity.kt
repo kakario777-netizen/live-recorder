@@ -166,6 +166,23 @@ class FilesActivity : Activity() {
                         setOnClickListener { Tidy.forceNow(this@FilesActivity, item.name); render() }
                     })
                 }
+                if (tidyState?.startsWith("변환 실패") == true) {
+                    row.addView(Button(this).apply {
+                        text = "다시 시도"; isAllCaps = false; textSize = 13f
+                        setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#1565C0"))
+                        setOnClickListener { Tidy.retry(this@FilesActivity, item.name); render() }
+                    })
+                    if (FtpConfig.ready(this)) row.addView(Button(this).apply {
+                        text = "그대로 업로드"; isAllCaps = false; textSize = 13f
+                        setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#D32F2F"))
+                        setOnClickListener {
+                            android.app.AlertDialog.Builder(this@FilesActivity)
+                                .setMessage("H.265로 바꾸지 않고 H.264 그대로 올릴까요?\n(용량이 큽니다)")
+                                .setPositiveButton("올리기") { _, _ -> Tidy.uploadAsIs(this@FilesActivity, item.name); render() }
+                                .setNegativeButton("취소", null).show()
+                        }
+                    })
+                }
                 listBox.addView(row)
                 listBox.addView(android.view.View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")) }, LinearLayout.LayoutParams(-1, 1))
                 return@forEach

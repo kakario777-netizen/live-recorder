@@ -22,11 +22,13 @@ import java.io.File
  * 앱 전용 작업 공간에서 만든 뒤, 성공하면 원래 파일 자리에 완성본으로 바꿔 넣는다.
  */
 object Tidy {
-    class Job(val name: String, val path: String?, val uri: Uri?, val streamer: String = "", var force: Boolean = false)
+    class Job(val name: String, val path: String?, val uri: Uri?, val streamer: String = "", var force: Boolean = false, var fails: Int = 0)
 
     private val queue = ArrayDeque<Job>()
     /** H.264라 변환해야 하는데 충전 중이 아니어서 기다리는 파일 (업로드도 안 함) */
     private val waitCharge = ArrayList<Job>()
+    /** H.265 변환이 2번 실패한 파일: 자동으로 다시 시도하지 않음 (H.264 그대로 보관, 업로드 안 함) */
+    private val failed = ArrayList<Job>()
     @Volatile private var transformer: Transformer? = null
     @Volatile private var curOut: File? = null
     private var appCtx: Context? = null
@@ -52,7 +54,10 @@ object Tidy {
         val a = org.json.JSONArray()
         synchronized(queue) {
             (listOfNotNull(current) + queue + waitCharge).distinctBy { it.name }.forEach {
-                a.put(org.json.JSONObject().put("name", it.name).put("path", it.path ?: "").put("uri", it.uri?.toString() ?: "").put("streamer", it.streamer))
+                a.put(org.json.JSONObject().put("name", it.name).put("path", it.path ?: "").put("uri", it.uri?.toString() ?: "").put("streamer", it.streamer).put("fails", it.fails))
+            }
+            failed.forEach {
+                a.put(org.json.JSONObject().put("name", it.name).put("path", it.path ?: "").put("uri", it.uri?.toString() ?: "").put("streamer", it.streamer).put("fails", it.fails).put("failed", true))
             }
         }
         ctx.getSharedPreferences("main", Context.MODE_PRIVATE).edit().putString("tidyQueue", a.toString()).apply()
@@ -82,7 +87,8 @@ object Tidy {
                     val o = a.getJSONObject(k)
                     val p = o.optString("path").ifEmpty { null }
                     if (p != null && !File(p).exists()) continue
-                    enqueue(app, Job(o.getString("name"), p, o.optString("uri").ifEmpty { null }?.let { Uri.parse(it) }, o.optString("streamer")))
+                    val j = Job(o.getString("name"), p, o.optString("uri").ifEmpty { null }?.let { Uri.parse(it) }, o.optString("streamer"), fails = o.optInt("fails", 0))
+                    if (o.optBoolean("failed")) synchronized(queue) { failed.add(j) } else enqueue(app, j)
                 }
             } catch (_: Exception) {}
         }
@@ -126,6 +132,8 @@ object Tidy {
 
     /** 파일 목록 표시용: 정리 중이면 "정리 중… 37%", 대기 중이면 "정리 대기" */
     @Volatile var converting = false; private set
+    /** 앱이 직접 다시 쓰는 단계(시간 바로잡기) 중인지 */
+    @Volatile private var remuxing = false
 
     /** H.264로 녹화된 파일은 정리하면서 H.265로 변환 (기본 켜짐, 충전 중일 때만) */
     fun autoH265(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("autoH265", true)
@@ -155,6 +163,28 @@ object Tidy {
         handler?.post { if (current == null) next(app) }
     }
 
+    /** 변환 실패 파일 '다시 시도' */
+    fun retry(ctx: Context, name: String) {
+        val app = ctx.applicationContext
+        val job = synchronized(queue) { failed.firstOrNull { it.name == name }?.also { failed.remove(it) } } ?: return
+        job.fails = 0; job.force = true
+        synchronized(queue) { queue.addFirst(job) }
+        RecordService.addLog("변환 다시 시도: $name")
+        persist(); onChange?.invoke()
+        ensureThread()
+        handler?.post { if (current == null) next(app) }
+    }
+
+    /** 변환 실패 파일 'H.264 그대로 업로드' (사용자가 직접 누른 경우만) */
+    fun uploadAsIs(ctx: Context, name: String) {
+        val job = synchronized(queue) { failed.firstOrNull { it.name == name }?.also { failed.remove(it) } } ?: return
+        persist(); onChange?.invoke()
+        RecordService.addLog("변환 없이 H.264 그대로 업로드 (직접 선택): $name")
+        Uploader.enqueue(ctx, job.name, job.path ?: pathFor(job.name), job.streamer, allowH264 = true)
+    }
+
+    fun isFailed(name: String) = synchronized(queue) { failed.any { it.name == name } }
+
     /** 충전 대기 파일이 있으면 1분마다 충전기 확인 (꽂힌 채로 대기에 들어간 경우 대비) */
     private val chargeCheck = object : Runnable {
         override fun run() {
@@ -168,7 +198,8 @@ object Tidy {
     }
 
     fun statusOf(name: String): String? = when {
-        current?.name == name -> (if (converting) "H.265 변환 중… " else "정리 중… ") + "$percent%"
+        current?.name == name -> (if (converting && !remuxing) "H.265 변환 중… " else "정리 중… ") + "$percent%"
+        synchronized(queue) { failed.any { it.name == name } } -> "변환 실패 (H.264 보관)"
         synchronized(queue) { waitCharge.any { it.name == name } } -> "충전 대기 (H.265 변환)"
         synchronized(queue) { queue.any { it.name == name } } -> "정리 대기"
         else -> null
@@ -201,6 +232,7 @@ object Tidy {
         if (appCtx == null) appCtx = app
         synchronized(queue) {
             if (current?.name == job.name || queue.any { it.name == job.name } || waitCharge.any { it.name == job.name }) return
+            if (failed.any { it.name == job.name } && !job.force) return   // 변환 실패 파일은 자동으로 다시 넣지 않음
             queue.add(job)
         }
         persist()
@@ -256,16 +288,46 @@ object Tidy {
             return
         }
         RecordService.addLog((if (converting) "정리 + H.265 변환 시작: " else "정리 시작: ") + job.name)
+        // 1단계: 앱이 직접 다시 쓰기 — 이어 붙인 곳의 시간 값을 순서대로 바로잡음 (다시 압축 안 함)
+        var srcFile: File? = dedupUsed ?: jp?.let { File(it) }
+        val rem = File(workDir, "remux_" + job.name).also { it.delete() }
+        if (srcFile != null) {
+            remuxing = true
+            val err = Remux.run(srcFile, rem) { p -> percent = p; onChange?.invoke() }
+            remuxing = false
+            if (err == null && rem.length() > 0) {
+                dedupUsed?.delete()
+                dedupUsed = rem          // 변환이 실패해도 이 정리본으로 원본을 바꿔 둠
+                srcFile = rem
+                input = Uri.fromFile(rem)
+                if (!converting) {
+                    // 변환이 필요 없으면 이걸로 정리 끝
+                    rem.renameTo(out)
+                    dedupUsed = null
+                    finish(ctx, job, out, true, "")
+                    return
+                }
+            } else {
+                rem.delete()
+                RecordService.addLog("직접 다시 쓰기 실패 → 기존 방식으로 정리: ${job.name} ($err)")
+            }
+        }
+        percent = 0
+        onChange?.invoke()
         val tb = Transformer.Builder(ctx).setLooper(h.looper)
         if (converting) {
             tb.setVideoMimeType(MimeTypes.VIDEO_H265)
-            val src = job.path?.let { File(it).length() } ?: 0L
+            val src = srcFile?.length() ?: 0L
             val bitrate = try {
                 val r = android.media.MediaMetadataRetriever()
                 try {
                     r.setDataSource(ctx, input)
                     val ms = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
-                    if (ms > 5000 && src > 0) ((src * 8 * 1000 / ms - 160_000) * 55 / 100).coerceIn(800_000, 8_000_000).toInt() else null
+                    if (ms > 5000 && src > 0) {
+                        // 원본 영상 비트레이트의 55% (원본보다 커지지 않게, 최소 15만)
+                        val srcV = (src * 8 * 1000 / ms - 160_000).coerceAtLeast(150_000)
+                        (srcV * 55 / 100).coerceIn(150_000, minOf(srcV, 8_000_000)).toInt()
+                    } else null
                 } finally { r.release() }
             } catch (e: Exception) { null }
             val enc = DefaultEncoderFactory.Builder(ctx).setEnableFallback(true)
@@ -330,9 +392,16 @@ object Tidy {
         val wasConverting = converting
         transformer = null; curOut = null
         if (wasConverting && !ok) {
-            // 변환 실패: H.264를 그대로 올리지 않고, 다음 충전 때 다시 시도
-            synchronized(queue) { waitCharge.add(job) }
-            RecordService.addLog("H.265 변환 실패 → 올리지 않고 다음에 충전기를 꽂을 때 다시 시도: ${job.name}")
+            // 변환 실패: H.264는 올리지 않음. 1번 실패면 한 번 더, 2번 실패면 멈추고 보관
+            job.fails++
+            job.force = false
+            if (job.fails >= 2) {
+                synchronized(queue) { failed.add(job) }
+                RecordService.addLog("H.265 변환 2번 실패 → 자동 시도 멈춤, H.264 그대로 보관 (파일 목록에서 '다시 시도' 또는 '그대로 업로드'): ${job.name}")
+            } else {
+                synchronized(queue) { waitCharge.add(job) }
+                RecordService.addLog("H.265 변환 실패(1번째) → 다음 확인 때 한 번 더 시도: ${job.name}")
+            }
         } else {
             // 정리·변환이 끝난 파일 → FTP 자동 업로드
             Uploader.enqueue(ctx, job.name, job.path ?: pathFor(job.name), job.streamer)
