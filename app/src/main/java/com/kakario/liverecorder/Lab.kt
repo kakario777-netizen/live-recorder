@@ -32,7 +32,12 @@ object Lab {
     // 채팅 연결: 페이지가 보낸 것(입장권·구독)을 통째로 기억 → 앱이 똑같이 보내서 직접 받기 시험
     val wsUrl = ConcurrentHashMap<Int, String>()
     val wsSent = ConcurrentHashMap<Int, MutableList<String>>()
+    val pageChans = ConcurrentHashMap<String, Int>()
     fun onWs(slotId: Int, kind: String, text: String) {
+        if (kind == "받음") Regex("\"push\":\\{\"channel\":\"([^\"]+)\"").findAll(text).forEach { m ->
+            val ch = m.groupValues[1].replace(Regex("[0-9]+"), "N")
+            if (pageChans.merge(ch, 1, Int::plus) == 1) add("페이지 채팅 연결에서 받은 채널 (처음 본 것)", ch + " · 예: " + text.substringAfter(m.value).take(300))
+        }
         when (kind) {
             "연결" -> { wsUrl[slotId] = text.substringBefore(" | "); wsSent.remove(slotId) }
             "보냄" -> wsSent.getOrPut(slotId) { java.util.Collections.synchronizedList(ArrayList()) }.let { if (it.size < 300) it.add(text) }
@@ -386,17 +391,35 @@ object Lab {
             val fin = { left--; if (left == 0) { progress["전체 시험"] = "끝"; running--; main.post(done) } }
             for ((name, mu, body) in pick) {
                 val target = Quality.forUrl(ctx, "https://ko.stripchat.com/$name")
-                val v = chooseVariant(body, target)
-                if (v == null) { add(sec, "$name: 화질 목록을 못 읽음"); fin(); continue }
                 val pk = body.lines().filter { it.startsWith("#EXT-X-MOUFLON:PSCH:") }.map { it.substringAfterLast(':').trim() }.firstOrNull { keys.containsKey(it) }
                 if (pk == null) { add(sec, "$name: 아는 열쇠가 없음 (재생기로 1분 녹화하면 배움)"); fin(); continue }
-                val pl = v.second + (if (v.second.contains('?')) "&" else "?") + "psch=v2&pkey=$pk"
-                add(sec, "$name: ${v.first} 고름 (목표 ${Quality.label(target)}) · 열쇠 $pk")
+                // 목표 화질부터 차례로 실제로 열리는지 확인 (어떤 화질은 404가 나기도 함)
+                var pl: String? = null
+                for (v in rankVariants(body, target)) {
+                    val u = v.second + (if (v.second.contains('?')) "&" else "?") + "psch=v2&pkey=$pk"
+                    val c = try { get(u, CDN_H).code } catch (e: Exception) { -1 }
+                    add(sec, "$name: ${v.first} 확인 → $c")
+                    if (c in 200..299) { pl = u; add(sec, "$name: ${v.first} 고름 (목표 ${Quality.label(target)})"); break }
+                }
+                if (pl == null) { add(sec, "$name: 열리는 화질이 없음"); fin(); continue }
                 directRun(ctx, "재생기 없이 녹화 시험 $name", "녹화 $name", name, pl, CDN_H, seconds) { fin() }
             }
             // 3) 채팅 직접 받기 (페이지가 보낸 입장권·구독을 그대로)
             chatTest(ctx, seconds) { fin() }
         }.start()
+    }
+
+    /** 목표 화질 이하를 좋은 순으로, 그다음 목표보다 높은 것 */
+    private fun rankVariants(master: String, target: Int): List<Pair<String, String>> {
+        val ls = master.lines()
+        val vs = ArrayList<Triple<Int, String, String>>()
+        for (i in ls.indices) if (ls[i].startsWith("#EXT-X-STREAM-INF")) {
+            val h = Regex("""RESOLUTION=\d+x(\d+)""").find(ls[i])?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val n = Regex("""NAME="([^"]+)"""").find(ls[i])?.groupValues?.get(1) ?: "${h}p"
+            val u = ls.getOrNull(i + 1)?.trim() ?: continue
+            if (!n.contains("blurred", true)) vs.add(Triple(h, "$n(${h}p)", u))
+        }
+        return (vs.filter { it.first <= target }.sortedByDescending { it.first } + vs.filter { it.first > target }.sortedBy { it.first }).map { it.second to it.third }
     }
 
     /** master에서 목표 화질 이하 중 가장 좋은 것 (최고 화질이면 제일 큰 것) */
@@ -423,18 +446,24 @@ object Lab {
         val frames = wsSent[sid]!!.toList()
         progress["채팅"] = "연결 중…"
         add(sec, "${sid}번 페이지가 보낸 ${frames.size}개를 그대로 보내 봄 · $url")
-        val client = okhttp3.OkHttpClient.Builder().pingInterval(20, java.util.concurrent.TimeUnit.SECONDS).build()
+        val client = okhttp3.OkHttpClient.Builder().build()   // 사이트 방식 핑("{}")만 씀
         val req = okhttp3.Request.Builder().url(url).header("Origin", "https://ko.stripchat.com").header("User-Agent", UA).build()
         val chans = ConcurrentHashMap<String, Int>()
         var msgs = 0; var kor = 0; var samples = 0
         val hangul = Regex("[\\uAC00-\\uD7A3]")
         val t0 = System.currentTimeMillis()
         val ws = client.newWebSocket(req, object : okhttp3.WebSocketListener() {
+            var sentRest = false
+            var rawN = 0
             override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
-                add(sec, "연결됨 (${response.code})"); frames.forEach { webSocket.send(it) }
+                add(sec, "연결됨 (${response.code}) → 입장권 보냄")
+                webSocket.send(frames.first())
             }
             override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
-                if (text == "{}") { webSocket.send("{}"); return }
+                if (rawN < 8) { rawN++; add(sec, "받은 원본 $rawN: " + text.take(400)) }
+                if (text == "{}" || text.isBlank()) { webSocket.send("{}"); return }
+                // 입장 답을 받은 뒤에 나머지(구독)를 보냄
+                if (!sentRest && text.contains("\"connect\"")) { sentRest = true; frames.drop(1).forEach { webSocket.send(it) }; add(sec, "입장 성공 → 구독 ${frames.size - 1}개 보냄") }
                 for (line in text.split('\n')) {
                     if (line.isBlank()) continue
                     val o = try { org.json.JSONObject(line) } catch (e: Exception) { continue }
