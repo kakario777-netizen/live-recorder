@@ -50,6 +50,20 @@ class RecordService : Service() {
         const val ACTION_TIDY = "tidy"
         const val ACTION_UPLOAD = "upload"
         const val ACTION_SYNC = "sync"
+        const val ACTION_WATCH = "watch"
+
+        /** 자동 녹화: 방송이 켜진 걸 확인했을 때 녹화 칸 만들기 (끝나면 칸이 스스로 빠짐) */
+        fun addWatch(ctx: Context, pageUrl: String, name: String) {
+            val ua = try { android.webkit.WebSettings.getDefaultUserAgent(ctx) } catch (e: Exception) { "" }
+            ctx.startForegroundService(Intent(ctx, RecordService::class.java).setAction(ACTION_ADD)
+                .putExtra("url", pageUrl).putExtra("ua", ua).putExtra("name", name).putExtra("watch", true))
+        }
+
+        /** 자동 녹화가 켜진 즐겨찾기가 있으면 지켜보기 시작 */
+        fun startWatch(ctx: Context) {
+            if (!Watcher.any(ctx)) return
+            try { ctx.startForegroundService(Intent(ctx, RecordService::class.java).setAction(ACTION_WATCH)) } catch (_: Exception) {}
+        }
 
         /** 남은 업로드 처리 시작 (설정 저장 후, 앱 켤 때 등) */
         fun startUploads(ctx: Context) {
@@ -69,7 +83,7 @@ class RecordService : Service() {
         @Volatile var status = ""
         val log = ArrayList<String>()
         var onChange: (() -> Unit)? = null
-        private var instance: RecordService? = null
+        var instance: RecordService? = null; private set
 
         val running: Boolean get() = synchronized(slots) { slots.isNotEmpty() }
 
@@ -120,18 +134,18 @@ class RecordService : Service() {
         private fun prefs(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
 
         /** 저장된 '진행 중이던 녹화' (앱·폰이 꺼지기 전) */
-        class Job(val url: String, val ua: String, val name: String, val path: String?)
+        class Job(val url: String, val ua: String, val name: String, val path: String?, val watch: Boolean = false)
 
         fun savedJobs(ctx: Context): List<Job> = try {
             val a = JSONArray(prefs(ctx).getString("activeJobs", "[]"))
-            (0 until a.length()).map { val o = a.getJSONObject(it); Job(o.getString("url"), o.optString("ua"), o.optString("name"), o.optString("path").ifEmpty { null }) }
+            (0 until a.length()).map { val o = a.getJSONObject(it); Job(o.getString("url"), o.optString("ua"), o.optString("name"), o.optString("path").ifEmpty { null }, o.optBoolean("watch")) }
         } catch (e: Exception) { emptyList() }
 
         fun clearSaved(ctx: Context) = prefs(ctx).edit().remove("activeJobs").apply()
 
         private fun saveJobs(ctx: Context) {
             val a = JSONArray()
-            list().filter { !it.userStopped }.forEach { a.put(JSONObject().put("url", it.pageUrl).put("ua", it.ua).put("name", it.fixedName).put("path", it.currentPath ?: "")) }
+            list().filter { !it.userStopped }.forEach { a.put(JSONObject().put("url", it.pageUrl).put("ua", it.ua).put("name", it.fixedName).put("path", it.currentPath ?: "").put("watch", it.watch)) }
             prefs(ctx).edit().putString("activeJobs", a.toString()).apply()
         }
 
@@ -169,6 +183,7 @@ class RecordService : Service() {
         super.onCreate()
         instance = this
         Tidy.init(this)
+        if (Watcher.any(this)) Watcher.start(this)
     }
 
     private fun notification(text: String, ongoing: Boolean): Notification {
@@ -270,8 +285,9 @@ class RecordService : Service() {
         val fresh = jobs.filter { j -> j.path?.let { java.io.File(it) }?.let { it.exists() && System.currentTimeMillis() - it.lastModified() < 10 * 60_000L } == true }
         val rest = jobs - fresh.toSet()
         if (fresh.isNotEmpty()) addLog("녹화하던 ${fresh.size}개 먼저 이어 받기 시작, 방송 대기 ${rest.size}개는 차례로")
-        fresh.forEach { addSlot(it.url, it.ua, it.name, it.path) }
-        rest.forEachIndexed { i, it -> addSlot(it.url, it.ua, it.name, it.path, startDelay = 5_000L + i * 3_000L) }
+        fresh.forEach { addSlot(it.url, it.ua, it.name, it.path, watch = it.watch) }
+        // 자동 녹화 칸이었는데 이어 쓸 파일이 없으면 다시 만들지 않음 (지켜보기가 알아서 다시 시작)
+        rest.filter { !it.watch }.forEachIndexed { i, it -> addSlot(it.url, it.ua, it.name, it.path, startDelay = 5_000L + i * 3_000L) }
     }
 
     private var lastSweep = 0L
@@ -283,11 +299,11 @@ class RecordService : Service() {
         Thread { try { Tidy.sweep(this) } catch (_: Exception) {} }.start()
     }
 
-    private fun addSlot(url: String, ua: String, name: String, resumePath: String? = null, startDelay: Long = 0): Boolean {
+    private fun addSlot(url: String, ua: String, name: String, resumePath: String? = null, startDelay: Long = 0, watch: Boolean = false): Boolean {
         synchronized(slots) {
-            if (slots.size >= 100) { addLog("등록은 최대 100개까지예요"); return false }
-            if (slots.any { it.pageUrl == url }) { addLog("이미 녹화 중인 방송이에요"); return false }
-            val s = Slot(this, nextId++, url, ua, name, resumePath) { updateNotification() }
+            if (slots.size >= 300) { addLog("녹화 칸은 최대 300개까지예요"); return false }
+            if (slots.any { it.pageUrl == url }) { if (!watch) addLog("이미 녹화 중인 방송이에요"); return false }
+            val s = Slot(this, nextId++, url, ua, name, resumePath, watch) { updateNotification() }
             slots.add(s)
             s.start(startDelay)
         }
@@ -314,7 +330,13 @@ class RecordService : Service() {
             }
             ACTION_ADD -> {
                 ensureForeground()
-                addSlot(intent.getStringExtra("url") ?: return START_STICKY, intent.getStringExtra("ua") ?: "", intent.getStringExtra("name") ?: "")
+                addSlot(intent.getStringExtra("url") ?: return START_STICKY, intent.getStringExtra("ua") ?: "", intent.getStringExtra("name") ?: "",
+                    watch = intent.getBooleanExtra("watch", false))
+            }
+            ACTION_WATCH -> {
+                ensureForegroundQuiet()
+                Watcher.start(this)
+                return START_STICKY
             }
             ACTION_SYNC -> {
                 ensureForeground()
@@ -362,7 +384,8 @@ class RecordService : Service() {
 
     fun finishService() {
         // 녹화 담당 폰은 녹화가 없어도 원격 명령을 받으려고 계속 켜 둠
-        if (Sync.isRecorder(this) && !shuttingDown) {
+        if ((Sync.isRecorder(this) || Watcher.any(this)) && !shuttingDown) {
+            if (Watcher.any(this)) Watcher.start(this)
             ensureForegroundQuiet()
             return
         }

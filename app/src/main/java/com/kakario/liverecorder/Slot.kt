@@ -40,6 +40,8 @@ class Slot(
     val fixedName: String,
     /** 앱이 꺼지기 전에 쓰던 파일 — 최근 것이면 같은 파일에 이어서 녹화 */
     private val resumePath: String? = null,
+    /** 자동 녹화로 만든 칸: 방송이 끝나면 스스로 빠짐 */
+    val watch: Boolean = false,
     private val onUpdate: () -> Unit,
 ) {
     companion object {
@@ -454,6 +456,7 @@ class Slot(
             if (r.code !in 200..299) return null
             var text = String(r.body)
             if (Lab.on && text.contains("#EXT-X-STREAM-INF")) Lab.onMaster(id, streamer.ifEmpty { host }, url, text)
+            Regex("""/hls/(\d+)/master/""").find(url)?.let { Watcher.learnId(ctx, pageUrl, it.groupValues[1]) }
             if (text.contains("#EXT-X-STREAM-INF")) {
                 val lines = text.lines()
                 data class V(val inf: String, val uri: String, val bw: Long, val blurred: Boolean)
@@ -580,13 +583,43 @@ class Slot(
         return mediaMs + if (lastWriteAt > 0 && gap < 8000) gap else 0
     }
 
+    // 한국어 방송만 채팅 저장: 처음 15줄 정도를 보고 한글이 있으면 저장, 외국어만이면 이 방송은 채팅 저장 안 함
+    @Volatile private var chatDecided: Boolean? = null
+    private val pendingChat = ArrayList<Pair<String, Long>>()
+    private var pendingSince = 0L
+    private var chatAppend = false
+    private val hangul = Regex("[\uAC00-\uD7A3\u3131-\u318E]")
+
     private fun onChat(text: String) {
         val cw = chat ?: return
-        try { cw.add(text, mediaNow()) } catch (_: Exception) {}
+        val koreanOnly = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("chatKoreanOnly", true)
+        if (!koreanOnly || chatDecided == true) { try { cw.add(text, mediaNow()) } catch (_: Exception) {}; return }
+        if (chatDecided == false) return
+        synchronized(pendingChat) {
+            if (pendingChat.isEmpty()) pendingSince = System.currentTimeMillis()
+            pendingChat.add(text to mediaNow())
+            val n = pendingChat.size
+            if (n < 15 && !(n >= 5 && System.currentTimeMillis() - pendingSince > 5 * 60_000L)) return
+            val kor = pendingChat.count { hangul.containsMatchIn(it.first) }
+            if (kor >= 2 || (kor >= 1 && n < 8)) {
+                chatDecided = true
+                log("채팅 ${n}줄 중 한국어 ${kor}줄 → 이 방송 채팅 저장")
+                pendingChat.forEach { (t, ms) -> try { cw.add(t, ms) } catch (_: Exception) {} }
+            } else {
+                chatDecided = false
+                log("채팅 ${n}줄이 모두 외국어 → 이 방송은 채팅 저장 안 함")
+                chat = null
+                try { cw.close(mediaNow()) } catch (_: Exception) {}
+                if (!chatAppend) { cw.assFile.delete(); cw.txtFile.delete() }
+            }
+            pendingChat.clear()
+        }
     }
 
     private fun openChat(videoPath: String?, append: Boolean) {
         val p = videoPath ?: return
+        synchronized(pendingChat) { pendingChat.clear() }
+        chatDecided = null; chatAppend = append
         try {
             chat = ChatWriter(p, append)
             if (append) mediaMs = ChatWriter.lastTimeMs(p)
@@ -596,6 +629,15 @@ class Slot(
     private fun closeChat() {
         val cw = chat ?: return
         chat = null
+        // 아직 판단 전인데 방송이 끝남: 모인 것 중 한글이 있으면 저장, 없으면 버림
+        if (chatDecided == null) synchronized(pendingChat) {
+            val kor = pendingChat.count { hangul.containsMatchIn(it.first) }
+            if (kor >= 1) pendingChat.forEach { (t, ms) -> try { cw.add(t, ms) } catch (_: Exception) {} }
+            else if (ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("chatKoreanOnly", true)) {
+                cw.close(mediaNow()); if (!chatAppend) { cw.assFile.delete(); cw.txtFile.delete() }; pendingChat.clear(); return
+            }
+            pendingChat.clear()
+        }
         cw.close(mediaNow())
         if (cw.count > 0) log("채팅 ${cw.count}줄 저장")
     }
@@ -668,6 +710,7 @@ class Slot(
     }
 
     private var appendUsed = false
+    private val createdAt = System.currentTimeMillis()
     private var resumeReleased = false
 
     /** 파일 목록 표시용: 이 방송이 붙잡고 있는 파일들과 그 상태 */
@@ -808,6 +851,11 @@ class Slot(
                         continue
                     }
                     val idle = now - lastSegAt
+                    // 자동 녹화 칸인데 5분 넘게 영상이 안 나옴(비공개 방송 등) → 칸을 비우고 다시 지켜보기로
+                    if (watch && recordStartAt == 0L && out == null && now - createdAt > 5 * 60_000L && !canAppend()) {
+                        log("자동 녹화: 5분 동안 영상이 안 나옴 → 칸 비우고 다시 지켜보기")
+                        stopFlag = true; continue
+                    }
                     if (now - blurAt < 15_000) continue   // 흐린 화면이 계속 오는 중(티켓방) — 새로고침하지 않고 기다림
                     // 방송이 끝났으면 파일을 닫고 바로 정리·변환·업로드 → 다음 방송은 새 파일
                     // (방송 종료 확인 후 1분 / 이유 모르게 30분 넘게 끊김 / 티켓방은 제외)
@@ -826,6 +874,7 @@ class Slot(
                         appendUsed = true            // 다음 방송은 예전 파일에 이어 붙이지 않음
                         RecordService.fileOpened()   // 이어 녹화용 경로 비우기
                         setState("방송 대기")
+                        if (watch) { log("방송 끝 → 자동 녹화 칸 정리 (즐겨찾기가 계속 지켜봐요)"); stopFlag = true }
                         continue
                     }
                     if (idle > STALL_MS) {

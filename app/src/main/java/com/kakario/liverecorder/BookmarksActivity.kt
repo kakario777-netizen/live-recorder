@@ -87,8 +87,8 @@ class BookmarksActivity : Activity() {
             }
         }, LinearLayout.LayoutParams(0, -2, 1f))
         bottom.addView(Button(this).apply {
-            text = "이 목록 모두 녹화"; isAllCaps = false; setTextColor(Color.parseColor("#D32F2F"))
-            setOnClickListener { recordAll() }
+            text = "이 목록 자동 녹화…"; isAllCaps = false; setTextColor(Color.parseColor("#D32F2F"))
+            setOnClickListener { bulkMenu() }
         }, LinearLayout.LayoutParams(0, -2, 1f))
         root.addView(bottom)
 
@@ -161,8 +161,10 @@ class BookmarksActivity : Activity() {
             texts.addView(TextView(this).apply { text = b.name; textSize = 15f; setTextColor(Color.parseColor("#222222")) })
             texts.addView(TextView(this).apply {
                 val st = sl?.state
+                val ws = if (b.watch && sl == null) Watcher.status[b.url.trimEnd('/').lowercase()] ?: "자동 녹화 켜짐" else null
                 text = listOfNotNull(
                     st?.let { "● $it" },
+                    ws,
                     Names.siteName(b.url),
                     if (cur == ALL && b.cat.isNotEmpty()) "폴더: ${b.cat}" else null,
                     Quality.perUrl(this@BookmarksActivity, b.url).takeIf { it > 0 }?.let { Quality.label(it) }
@@ -171,7 +173,19 @@ class BookmarksActivity : Activity() {
                 setTextColor(Color.parseColor(if (st == "녹화 중") "#D32F2F" else if (st != null) "#EF6C00" else "#888888"))
             })
             row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
-            if (sl == null) row.addView(smallBtn("녹화", "#D32F2F") { pick("record", listOf(b)) })
+            // 자동 녹화 켜기/끄기 (방송 켜지면 받고, 끝나면 목록에서 빠짐)
+            row.addView(TextView(this).apply {
+                text = if (b.watch) "자동 켬" else "자동 끔"; textSize = 12f
+                setTextColor(if (b.watch) Color.WHITE else Color.parseColor("#555555"))
+                setPadding(dp(10), dp(5), dp(10), dp(5))
+                background = GradientDrawable().apply { setColor(Color.parseColor(if (b.watch) "#D32F2F" else "#E0E0E0")); cornerRadius = dp(14).toFloat() }
+                setOnClickListener {
+                    Bookmarks.setWatch(this@BookmarksActivity, listOf(b.url), !b.watch)
+                    if (!b.watch) RecordService.startWatch(this@BookmarksActivity)
+                    renderList()
+                }
+            }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(6), 0, dp(4), 0) })
+            if (sl == null) row.addView(smallBtn("지금 녹화", "#1565C0") { pick("record", listOf(b)) })
             listBox.addView(row)
             listBox.addView(View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")) }, LinearLayout.LayoutParams(-1, 1))
         }
@@ -183,6 +197,25 @@ class BookmarksActivity : Activity() {
             .putExtra(EXTRA_NAMES, l.map { it.name }.toTypedArray()))
         finish()
     }
+
+    private fun bulkMenu() {
+        val l = current()
+        if (l.isEmpty()) return
+        AlertDialog.Builder(this).setTitle("지금 보이는 ${l.size}개")
+            .setItems(arrayOf("자동 녹화 모두 켜기", "자동 녹화 모두 끄기", "지금 바로 모두 녹화 (방송 대기 칸으로)")) { _, i ->
+                when (i) {
+                    0 -> { Bookmarks.setWatch(this, l.map { it.url }, true); RecordService.startWatch(this); renderList()
+                        Toast.makeText(this, "${l.size}개 자동 녹화를 켰어요. 방송이 켜지면 녹화하고, 끝나면 목록에서 빠져요", Toast.LENGTH_LONG).show() }
+                    1 -> { Bookmarks.setWatch(this, l.map { it.url }, false); renderList() }
+                    2 -> recordAll()
+                }
+            }.setNegativeButton("취소", null).show()
+    }
+
+    private val refresher = android.os.Handler(android.os.Looper.getMainLooper())
+    private val refreshTick = object : Runnable { override fun run() { renderList(); refresher.postDelayed(this, 5000) } }
+    override fun onResume() { super.onResume(); refresher.postDelayed(refreshTick, 5000) }
+    override fun onPause() { refresher.removeCallbacks(refreshTick); super.onPause() }
 
     private fun recordAll() {
         val rec = RecordService.list().map { it.pageUrl }.toSet()
