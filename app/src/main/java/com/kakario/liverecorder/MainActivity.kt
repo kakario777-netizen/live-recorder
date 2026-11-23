@@ -955,6 +955,15 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun memText(): String {
+        val am = getSystemService(android.app.ActivityManager::class.java)
+        val mi = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+        val rt = Runtime.getRuntime()
+        val heap = (rt.totalMemory() - rt.freeMemory()) / 1048576
+        val pss = try { android.os.Debug.getPss() / 1024 } catch (e: Exception) { -1 }
+        return "앱 ${pss}MB (자바 ${heap}/${rt.maxMemory() / 1048576}MB) · 폰 여유 ${mi.availMem / 1048576}/${mi.totalMem / 1048576}MB" + (if (mi.lowMemory) " · 메모리 부족 상태" else "")
+    }
+
     /** 복사용: 앱 버전·기기 + 지금 상태 + 녹화 기록 */
     private fun buildLogReport(): String {
         val version = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "?" } catch (e: Exception) { "?" }
@@ -962,6 +971,7 @@ class MainActivity : Activity() {
             appendLine("=== 라이브 녹화 기록 ===")
             appendLine("앱 $version / ${android.os.Build.MODEL} / 안드로이드 ${android.os.Build.VERSION.RELEASE}")
             appendLine("상태: ${RecordService.status.ifBlank { "-" }}")
+            appendLine("메모리: " + memText())
             appendLine("잡힌 영상 주소: " + Sniff.list().joinToString(" | ") { "[${it.kind}] ${maskUrl(it.url).take(150)}" }.ifBlank { "없음" })
             appendLine()
             append(RecordService.logText().ifBlank { "(녹화 기록 없음)" })

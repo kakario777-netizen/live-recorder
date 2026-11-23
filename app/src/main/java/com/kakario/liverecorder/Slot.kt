@@ -128,6 +128,7 @@ class Slot(
         const val STALL_MS = 20_000L            // 이만큼 새 조각이 없으면 '끊김'으로 보고 확인 시작
         const val PAUSE_CHECK_MS = 30_000L      // 녹화 중 끊김(티켓방·방송 꺼짐): 30초마다 계속 확인, 포기 안 함
         const val START_WAIT_CHECK_MS = 120_000L // 방송 시작 전 대기: 2분마다 확인
+        const val LIGHT_CHECK_MS = 60_000L      // 가벼운 방송 확인이 되면 1분마다 (페이지를 안 열어서 부담 적음)
         const val RESUME_CHECK_MS = 15_000L     // 업데이트 직후 이어 받을 파일이 있을 때: 15초마다 확인
         const val NEW_FILE_AFTER_MS = 30 * 60_000L // 30분 넘게 끊겼다 돌아오면 새 방송으로 보고 새 파일
         const val TARGET_HEIGHT = 720
@@ -171,7 +172,15 @@ class Slot(
     private fun setState(s: String) { if (state != s) { state = s; log("상태: $s") }; onUpdate() }
 
     fun start(delayMs: Long = 0) {
-        main.postDelayed({ if (!stopFlag && web == null) createPlayer() }, delayMs)
+        main.postDelayed({
+            if (stopFlag || web != null) return@postDelayed
+            // 이어 쓸 파일이 없으면 먼저 가볍게 방송 중인지 물어보고, 꺼져 있으면 페이지를 열지 않음
+            Thread {
+                val live = if (canAppend()) null else liveCheck()
+                if (live == false) log("방송 꺼져 있음 → 페이지 열지 않고 1분마다 가볍게 확인")
+                else main.post { if (!stopFlag && web == null) createPlayer() }
+            }.start()
+        }, delayMs)
         Thread({ loop() }, "slot-$id").start()
     }
 
@@ -191,6 +200,7 @@ class Slot(
             javaScriptEnabled = true
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = false
+            blockNetworkImage = true        // 숨은 재생기: 다른 방송 썸네일 등 그림은 안 받음 (메모리·인터넷 절약)
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             loadWithOverviewMode = true
             useWideViewPort = true
@@ -422,9 +432,40 @@ class Slot(
         } catch (e: Exception) { null }
     }
 
-    /** 방송 대기·순서 대기 중엔 페이지를 비워 폰 부담·인터넷을 아낀다 */
-    private fun sleepPlayer() {
-        main.post { web?.loadUrl("about:blank") }
+    /** 방송 대기 중엔 재생기를 아예 없애서 메모리를 돌려준다 (확인할 때 다시 만듦) */
+    private fun sleepPlayer() { destroyPlayer() }
+
+    /**
+     * 가벼운 방송 확인: 페이지를 열지 않고 사이트 정보 주소만 물어봄 (스트립챗).
+     * true = 방송 중, false = 꺼짐, null = 모름(예전처럼 페이지를 열어 확인)
+     */
+    @Volatile private var apiWarned = false
+    @Volatile private var liveApiOk = false
+    private var lastFullCheck = System.currentTimeMillis()
+    private fun liveCheck(): Boolean? {
+        if (!host.contains("stripchat")) return null
+        val name = Names.streamerFromUrl(pageUrl).ifEmpty { return null }
+        return try {
+            val r = Net.get("https://$host/api/front/v2/models/username/" + java.net.URLEncoder.encode(name, "UTF-8") + "/cam", null, ua, timeoutMs = 10000, maxBytes = 2 * 1024 * 1024)
+            if (r.code !in 200..299) {
+                if (!apiWarned) { apiWarned = true; log("가벼운 방송 확인 안 됨(${r.code}) → 페이지를 열어 확인") }
+                return null
+            }
+            val t = String(r.body)
+            val res: Boolean? = when {
+                t.contains("\"isLive\":true") -> true
+                t.contains("\"isLive\":false") -> false
+                else -> {
+                    val st = Regex("\"status\"\\s*:\\s*\"(\\w+)\"").find(t)?.groupValues?.get(1)?.lowercase()
+                    when (st) { null -> null; "off", "idle", "offline" -> false; else -> true }
+                }
+            }
+            if (res != null && !liveApiOk) { liveApiOk = true; log("가벼운 방송 확인 사용: " + (if (res) "방송 중" else "꺼짐")) }
+            res
+        } catch (e: Exception) {
+            if (!apiWarned) { apiWarned = true; log("가벼운 방송 확인 실패 → 페이지를 열어 확인 (${e.message})") }
+            null
+        }
     }
 
     // ---------- 채팅 ----------
@@ -477,7 +518,7 @@ class Slot(
     // ---------- 한 번만 받기 보관함 · 속도 ----------
 
     private val cache = ConcurrentHashMap<String, ByteArray>()
-    private fun trimCache() { if (cache.size > 80) cache.keys.take(cache.size - 60).forEach { cache.remove(it) } }
+    private fun trimCache() { if (cache.size > 40) cache.keys.take(cache.size - 30).forEach { cache.remove(it) } }
 
     private val rateLog = ArrayDeque<Pair<Long, Int>>()
     private fun countRate(n: Int) = synchronized(rateLog) {
@@ -677,8 +718,14 @@ class Slot(
                         // 업데이트·오류 직후 쓰던 파일이 있으면: 15초마다 빨리 다시 확인 (페이지를 비우지 않음)
                         val resuming = out == null && canAppend()
                         val interval = if (everRecorded) PAUSE_CHECK_MS else if (resuming) RESUME_CHECK_MS else START_WAIT_CHECK_MS
-                        if (now - lastReload > interval) {
-                            lastReload = now; sleeping = false
+                        if (now - lastReload > (if (waitingStart && !resuming && liveApiOk) LIGHT_CHECK_MS else interval)) {
+                            lastReload = now
+                            // 방송 대기: 먼저 가볍게 물어보고, 꺼져 있으면 페이지를 열지 않음
+                            val live = if (waitingStart && !resuming) liveCheck() else null
+                            // 혹시 몰라 10분마다 한 번은 실제 페이지로도 확인
+                            if (live == false && now - lastFullCheck < 10 * 60_000L) continue
+                            lastFullCheck = now
+                            sleeping = false
                             reloadPlayer()
                         } else if (waitingStart && !resuming && !sleeping && now - lastReload > 40_000) {
                             // 방송 대기: 확인할 때만 잠깐 열고, 평소엔 비워 둠
