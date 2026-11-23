@@ -196,6 +196,8 @@ class Slot(
     private fun createPlayer() {
         val w = WebView(ctx)
         CookieManager.getInstance().setAcceptThirdPartyCookies(w, true)
+        // 숨은 재생기는 '안 보이는 화면'이라 폰이 엔진 우선순위를 낮춰 먼저 끄는 걸 막음 (화면에 보이는 것처럼 중요하게)
+        w.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
         w.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
