@@ -178,17 +178,17 @@ class Slot(
             Thread {
                 val live = if (canAppend()) null else liveCheck()
                 if (live == false) log("방송 꺼져 있음 → 페이지 열지 않고 1분마다 가볍게 확인")
-                else main.post { if (!stopFlag && web == null) createPlayer() }
+                else wantOpen = true
             }.start()
         }, delayMs)
         Thread({ loop() }, "slot-$id").start()
     }
 
     /** 사용자가 직접 멈춤 */
-    fun stop() { userStopped = true; stopFlag = true }
+    fun stop() { userStopped = true; stopFlag = true; Loading.leave(id) }
 
     /** 앱 종료 등으로 멈춤 (나중에 이어서 녹화할 대상) */
-    fun halt() { stopFlag = true }
+    fun halt() { stopFlag = true; Loading.leave(id) }
 
     // ---------- 숨은 재생기 ----------
 
@@ -215,6 +215,7 @@ class Slot(
             override fun shouldInterceptRequest(view: WebView, req: WebResourceRequest): WebResourceResponse? {
                 val url = req.url.toString()
                 val kind = Sniff.classify(url)
+                if (kind == "hls") playlistAt = System.currentTimeMillis()
                 if (kind == "hls" && req.method.equals("GET", true) && !url.contains("_HLS_msn")) {
                     pinBestQuality(url, req)?.let { return it }
                     return null
@@ -258,9 +259,9 @@ class Slot(
                     if (attached) try { ctx.getSystemService(WindowManager::class.java).removeView(view) } catch (_: Exception) {}
                     try { view.destroy() } catch (_: Exception) {}
                     web = null
-                    // 엔진이 죽으면 모든 재생기가 같이 죽음 → 한꺼번에 다시 열면 또 버거우니 차례로
-                    val wait = (if (out != null || canAppend()) 2000L else 8000L) + (id % 16) * 2500L
-                    main.postDelayed({ if (!stopFlag && web == null) createPlayer() }, wait)
+                    // 엔진이 죽으면 모든 재생기가 같이 죽음 → 한꺼번에 다시 열면 또 버거우니 차례로 (녹화하던 것 먼저)
+                    Loading.leave(id)
+                    wantOpen = true
                 }
                 return true
             }
@@ -332,11 +333,35 @@ class Slot(
     private val endedWords = listOf("offline", "오프라인", "방송 종료", "방송이 종료", "방송 중이 아닙", "is not live", "not streaming", "ended the stream", "will be back", "currently away")
     private val ticketWords = listOf("ticket", "티켓", "private", "프라이빗", "비공개", "group show", "그룹 쇼", "show in progress", "spy", "pay to watch", "유료")
 
-    private fun reloadPlayer() {
-        main.post { if (web == null) createPlayer() else web?.loadUrl(pageUrl) }
+    /** 다시 열기 요청 — 실제로 여는 건 loop가 '동시에 여는 개수' 안에서 차례로 */
+    private fun reloadPlayer() { wantOpen = true }
+
+    @Volatile private var wantOpen = false
+    /** 재생기를 (다시) 연 시각 / 재생기가 마지막으로 방송 목록(m3u8)을 받아 간 시각 */
+    @Volatile private var openedAt = 0L
+    @Volatile private var playlistAt = 0L
+
+    /** 재생기가 아직 뜨는 중이거나 방송 목록을 계속 받아 가는 중이면 새로고침하지 않음 (끊으면 처음부터 다시라 더 늦어짐) */
+    private fun playerBusy(now: Long): Boolean =
+        web != null && (now - openedAt < 90_000 || (now - playlistAt < 20_000 && now - openedAt < 240_000))
+
+    /** 우선: 쓰던 파일이 있는 방송(녹화하던 것) */
+    private fun priority() = out != null || canAppend()
+
+    private fun tryOpen(now: Long) {
+        if (!wantOpen || stopFlag) return
+        if (!Loading.tryEnter(id, now, priority())) {
+            if (!openWaitLogged) { openWaitLogged = true; log("다른 방송을 여는 중이라 차례 기다림 (폰 부담 줄이기)") }
+            return
+        }
+        openWaitLogged = false
+        wantOpen = false
+        openedAt = now
+        main.post { if (!stopFlag) { if (web == null) createPlayer() else web?.loadUrl(pageUrl) } }
         // 페이지가 뜬 뒤 화면 글자를 읽어 티켓방인지 방송 종료인지 구분
         main.postDelayed({ checkPauseKind() }, 8000)
     }
+    private var openWaitLogged = false
 
     private fun checkPauseKind() {
         val w = web ?: return
@@ -437,7 +462,7 @@ class Slot(
     }
 
     /** 방송 대기 중엔 재생기를 아예 없애서 메모리를 돌려준다 (확인할 때 다시 만듦) */
-    private fun sleepPlayer() { destroyPlayer() }
+    private fun sleepPlayer() { destroyPlayer(); Loading.leave(id) }
 
     /**
      * 가벼운 방송 확인: 페이지를 열지 않고 사이트 정보 주소만 물어봄 (스트립챗).
@@ -454,16 +479,18 @@ class Slot(
         liveSeenAt = System.currentTimeMillis()   // 3분 동안은 30초마다 계속 다시 열어 봄
         retryRequested = true
         destroyPlayer()
-        main.post { if (!stopFlag && web == null) createPlayer() }
+        Loading.leave(id)
+        wantOpen = true
     }
     /** 가벼운 확인에서 '방송 중'이 마지막으로 나온 시각 — 이 뒤 3분은 재생기를 없애지 않고 30초마다 다시 열어 봄 */
     @Volatile private var liveSeenAt = 0L
     private var lastFullCheck = System.currentTimeMillis()
     private fun liveCheck(): Boolean? {
-        if (!host.contains("stripchat")) return null
+        if (!host.contains("stripchat") || Loading.apiBlocked) return null
         val name = Names.streamerFromUrl(pageUrl).ifEmpty { return null }
         return try {
             val r = Net.get("https://$host/api/front/v2/models/username/" + java.net.URLEncoder.encode(name, "UTF-8") + "/cam", null, ua, timeoutMs = 10000, maxBytes = 2 * 1024 * 1024)
+            if (r.code == 403 || r.code == 401) Loading.apiBlocked = true   // 사이트가 막음 → 이번 실행 동안은 다시 묻지 않음
             if (r.code !in 200..299) {
                 if (!apiWarned) { apiWarned = true; log("가벼운 방송 확인 안 됨(${r.code}) → 페이지를 열어 확인") }
                 return null
@@ -697,6 +724,7 @@ class Slot(
                 val c = q.poll(1, TimeUnit.SECONDS)
                 val now = System.currentTimeMillis()
                 if (retryRequested) { retryRequested = false; lastReload = now; sleeping = false }
+                tryOpen(now)
                 if (c == null) {
                     // 순서 대기: 자리가 나면 다시 열어서 시작
                     if (queued) {
@@ -740,7 +768,7 @@ class Slot(
                         val resuming = out == null && canAppend()
                         val liveNow = now - liveSeenAt < 3 * 60_000L
                         val interval = if (everRecorded || liveNow) PAUSE_CHECK_MS else if (resuming) RESUME_CHECK_MS else START_WAIT_CHECK_MS
-                        if (now - lastReload > (if (waitingStart && !resuming && !liveNow && liveApiOk) LIGHT_CHECK_MS else interval)) {
+                        if (now - lastReload > (if (waitingStart && !resuming && !liveNow && liveApiOk) LIGHT_CHECK_MS else interval) && !playerBusy(now) && !wantOpen) {
                             lastReload = now
                             // 방송 대기: 먼저 가볍게 물어보고, 꺼져 있으면 페이지를 열지 않음
                             val live = if (waitingStart && !resuming) liveCheck() else null
@@ -750,7 +778,7 @@ class Slot(
                             lastFullCheck = now
                             sleeping = false
                             reloadPlayer()
-                        } else if (waitingStart && !resuming && !liveNow && !sleeping && now - lastReload > 40_000) {
+                        } else if (waitingStart && !resuming && !liveNow && !sleeping && !wantOpen && now - openedAt > 60_000 && now - playlistAt > 20_000 && now - lastReload > 40_000) {
                             // 방송 대기: 확인할 때만 잠깐 열고, 평소엔 비워 둠
                             sleeping = true
                             sleepPlayer()
@@ -804,6 +832,7 @@ class Slot(
                 if (gap > STALL_MS) pauseKind = ""
                 lastSegAt = now
                 if (firstSegAt == 0L) firstSegAt = now
+                Loading.leave(id)   // 영상이 나오기 시작함 → 다음 방송이 열 차례
                 val mp4 = key.endsWith(".mp4")
                 try {
                     // 같은 시간대는 한 번만 저장
@@ -932,4 +961,28 @@ class Slot(
             else -> state
         }
     }
+}
+
+
+/** 동시에 '여는 중'인 재생기 수 제한 — 한꺼번에 여러 방송 페이지를 열면 폰이 버거워 다 같이 늦어짐 */
+object Loading {
+    private const val MAX = 3
+    private const val TIMEOUT = 150_000L   // 이 시간 안에 영상이 안 나오면 자리를 비켜 줌
+    private val opening = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+    private val priorityWaiting = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+    @Volatile var apiBlocked = false
+
+    @Synchronized fun tryEnter(id: Int, now: Long, priority: Boolean): Boolean {
+        opening.entries.removeIf { now - it.value > TIMEOUT }
+        priorityWaiting.entries.removeIf { now - it.value > 5_000 }
+        if (opening.containsKey(id)) { opening[id] = now; return true }
+        // 녹화하던 방송이 기다리고 있으면 새 방송은 양보
+        if (!priority && priorityWaiting.isNotEmpty()) return false
+        if (opening.size >= MAX) { if (priority) priorityWaiting[id] = now; return false }
+        opening[id] = now
+        priorityWaiting.remove(id)
+        return true
+    }
+
+    fun leave(id: Int) { opening.remove(id); priorityWaiting.remove(id) }
 }
