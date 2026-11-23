@@ -60,8 +60,9 @@ object Lab {
         sb.append("=== 라이브 녹화 실험 결과 ===\n")
         sb.append("앱 ").append(BuildConfig.VERSION_NAME).append(" / ").append(android.os.Build.MODEL).append(" / 안드로이드 ").append(android.os.Build.VERSION.RELEASE).append('\n')
         sb.append("메모리: ").append(memText(ctx)).append('\n')
-        probes.values.forEach { it.dump(sb) }
+        // 시험 결과를 먼저, 재생기 원본(길다)은 맨 뒤에 짧게
         sections.forEach { (k, v) -> sb.append("\n##### ").append(k).append(" #####\n").append(v) }
+        probes.values.take(2).forEach { it.dump(sb) }
         return sb.toString()
     }
 
@@ -98,14 +99,14 @@ object Lab {
             sb.append("--- 전체 목록(master) 주소: ").append(masterUrl).append('\n')
             sb.append(master?.lines()?.take(60)?.joinToString("\n") ?: "(못 받음)").append('\n')
             sb.append("--- 방송 목록 요청 머리글: ").append(playlistHeaders).append('\n')
-            playlists.forEachIndexed { i, (u, t) ->
+            playlists.take(1).forEachIndexed { i, (u, t) ->
                 sb.append("--- 방송 목록 ${i + 1} 주소: ").append(u).append('\n')
                 val ls = t.lines()
-                sb.append(ls.take(140).joinToString("\n")).append('\n')
-                if (ls.size > 140) sb.append("…(${ls.size}줄 중 140줄)\n")
+                sb.append(ls.take(40).joinToString("\n")).append('\n')
+                if (ls.size > 40) sb.append("…(${ls.size}줄 중 40줄)\n")
             }
             sb.append("--- 재생기가 실제로 요청한 조각 주소 (처음 ${segs.size}개)\n")
-            segs.forEach { sb.append(it).append('\n') }
+            segs.take(8).forEach { sb.append(it).append('\n') }
             sb.append("--- 조각 요청 머리글: ").append(segHeaders).append('\n')
             sb.append("--- 암호 풀기 시도\n").append(decodeNote.ifEmpty { "(암호 줄 없음 또는 아직 분석 전)" }).append('\n')
         }
