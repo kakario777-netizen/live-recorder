@@ -332,6 +332,7 @@ class MainActivity : Activity() {
     private fun setupWeb(w: WebView) {
         CookieManager.getInstance().setAcceptCookie(true)
         configure(w)
+        ChatHub.hook(this, w)
         w.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, req: WebResourceRequest): WebResourceResponse? {
                 sniff(req)
@@ -1060,9 +1061,13 @@ class MainActivity : Activity() {
             setTextIsSelectable(true)
             setPadding(dp(14), dp(8), dp(14), dp(8))
         }
-        val text = buildLogReport()
+        RecordService.logFile = java.io.File(filesDir, "record_log.txt")
+        val recent = RecordService.recentLog(6)
+        val text = (buildLogReport() + "\n\n=== 최근 6시간 기록 (앱이 꺼져도 남는 기록) ===\n" + recent.ifBlank { "(아직 없음)" }).let {
+            if (it.length > 180_000) it.take(20_000) + "\n…(중간 생략)…\n" + it.takeLast(158_000) else it
+        }
         copyAll("녹화 기록", text)
-        Toast.makeText(this, "기록 전체를 복사했어요. 채팅에 붙여 넣기만 하세요.", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "최근 6시간 기록까지 복사했어요. 채팅에 붙여 넣기만 하세요.", Toast.LENGTH_LONG).show()
         AlertDialog.Builder(this)
             .setTitle("녹화 기록")
             .setView(ScrollView(this).apply { addView(tv) })

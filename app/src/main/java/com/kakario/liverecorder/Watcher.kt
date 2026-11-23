@@ -32,6 +32,7 @@ object Watcher {
 
     fun watched(ctx: Context) = Bookmarks.list(ctx).filter { it.watch }
     fun any(ctx: Context) = watched(ctx).isNotEmpty()
+    fun isWatched(ctx: Context, url: String) = watched(ctx).any { key(it.url) == key(url) }
 
     fun idOf(ctx: Context, url: String): String? = prefs(ctx).getString("id_" + key(url), null)
     fun learnId(ctx: Context, url: String, id: String) {
@@ -152,6 +153,7 @@ object Watcher {
         w.settings.blockNetworkImage = true
         w.settings.mediaPlaybackRequiresUserGesture = true
         CookieManager.getInstance().setAcceptThirdPartyCookies(w, true)
+        ChatHub.hook(ctx, w)
         w.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, req: WebResourceRequest): WebResourceResponse? {
                 val u = req.url.toString()

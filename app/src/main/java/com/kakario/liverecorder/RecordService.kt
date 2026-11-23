@@ -93,7 +93,39 @@ class RecordService : Service() {
                 log.add("[$t] $s")
                 if (log.size > 300) log.removeAt(0)
             }
+            saveLogLine(s)
             onChange?.invoke()
+        }
+
+        // ---------- 오래 남는 기록 (앱이 꺼져도 남음, 약 3MB까지) ----------
+        @Volatile var logFile: java.io.File? = null
+        private val logFmt = SimpleDateFormat("MM-dd HH:mm:ss", Locale.KOREA)
+        private fun saveLogLine(s: String) {
+            val f = logFile ?: Lab.appCtx?.let { java.io.File(it.filesDir, "record_log.txt") }?.also { logFile = it } ?: return
+            try {
+                synchronized(logFmt) {
+                    f.appendText("[" + logFmt.format(Date()) + "] " + s.replace('\n', ' ') + "\n")
+                    if (f.length() > 3_000_000) {
+                        val keep = f.readText().takeLast(1_500_000)
+                        f.writeText(keep.substringAfter('\n'))
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        /** 최근 몇 시간 기록 (파일에서) */
+        fun recentLog(hours: Int): String {
+            val f = logFile ?: return ""
+            if (!f.exists()) return ""
+            val cut = System.currentTimeMillis() - hours * 3600_000L
+            val y = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+            val fmt = SimpleDateFormat("yyyy MM-dd HH:mm:ss", Locale.KOREA)
+            val lines = try { f.readLines() } catch (e: Exception) { return "" }
+            val i = lines.indexOfFirst { l ->
+                val t = try { fmt.parse("$y " + l.substring(1, 15))?.time } catch (e: Exception) { null }
+                t != null && t >= cut && t <= System.currentTimeMillis() + 3600_000L
+            }
+            return if (i < 0) "" else lines.drop(i).joinToString("\n")
         }
 
         fun logText(): String = synchronized(log) { log.joinToString("\n") }
@@ -141,6 +173,15 @@ class RecordService : Service() {
             (0 until a.length()).map { val o = a.getJSONObject(it); Job(o.getString("url"), o.optString("ua"), o.optString("name"), o.optString("path").ifEmpty { null }, o.optBoolean("watch")) }
         } catch (e: Exception) { emptyList() }
 
+        /** 생방 대기로 다시 시작할 때 이어 붙일 파일 (10분 안에 쓴 것만) */
+        fun rememberResume(ctx: Context, url: String, path: String) =
+            ctx.getSharedPreferences("resumeMap", Context.MODE_PRIVATE).edit().putString(url, path).apply()
+        fun resumeFor(ctx: Context, url: String): String? {
+            val p = ctx.getSharedPreferences("resumeMap", Context.MODE_PRIVATE).getString(url, null) ?: return null
+            val f = java.io.File(p)
+            return if (f.exists() && System.currentTimeMillis() - f.lastModified() < 10 * 60_000L) p else null
+        }
+
         fun clearSaved(ctx: Context) = prefs(ctx).edit().remove("activeJobs").apply()
 
         private fun saveJobs(ctx: Context) {
@@ -183,6 +224,9 @@ class RecordService : Service() {
         super.onCreate()
         instance = this
         Tidy.init(this)
+        Lab.appCtx = applicationContext
+        logFile = java.io.File(filesDir, "record_log.txt")
+        try { Lab.loadKeys(this) } catch (_: Exception) {}
         if (Watcher.any(this)) Watcher.start(this)
     }
 
@@ -281,7 +325,24 @@ class RecordService : Service() {
     }
 
     /** 다시 켜질 때: 녹화하던 방송(이어 쓸 파일 있음)을 먼저 바로 열고, 방송 대기는 3초 간격으로 천천히 열기 */
-    private fun resumeAll(jobs: List<Job>) {
+    /** 이번 업데이트에서 한 번만: 등록돼 있던 것 전부(받는 중이던 것 포함) → 즐겨찾기 + 생방 대기 */
+    private fun migrateOnce(jobs: List<Job>): List<Job> {
+        if (BuildConfig.LAB) return jobs
+        val mp = getSharedPreferences("main", MODE_PRIVATE)
+        if (mp.getBoolean("migratedToWatch", false)) return jobs
+        mp.edit().putBoolean("migratedToWatch", true).apply()
+        if (jobs.isEmpty()) return jobs
+        val have = Bookmarks.list(this).map { it.url }.toSet()
+        jobs.forEach { j -> if (j.url !in have) Bookmarks.add(this, j.name.ifEmpty { Names.streamerFromUrl(j.url) }, j.url) }
+        Bookmarks.setWatch(this, jobs.map { it.url }, true)
+        jobs.forEach { j -> j.path?.let { rememberResume(this, j.url, it) } }
+        addLog("등록돼 있던 ${jobs.size}개를 모두 즐겨찾기 '생방 대기'로 옮김 → 녹화 목록은 비우고, 방송 중인 건 곧바로 직접 받기로 이어 받음")
+        return jobs.map { Job(it.url, it.ua, it.name, it.path, watch = true) }
+    }
+
+    private fun resumeAll(jobs0: List<Job>) {
+        val jobs = migrateOnce(jobs0)
+        if (jobs.any { it.watch }) Watcher.start(this)
         val fresh = jobs.filter { j -> j.path?.let { java.io.File(it) }?.let { it.exists() && System.currentTimeMillis() - it.lastModified() < 10 * 60_000L } == true }
         val rest = jobs - fresh.toSet()
         if (fresh.isNotEmpty()) addLog("녹화하던 ${fresh.size}개 먼저 이어 받기 시작, 방송 대기 ${rest.size}개는 차례로")
@@ -330,8 +391,10 @@ class RecordService : Service() {
             }
             ACTION_ADD -> {
                 ensureForeground()
-                addSlot(intent.getStringExtra("url") ?: return START_STICKY, intent.getStringExtra("ua") ?: "", intent.getStringExtra("name") ?: "",
-                    watch = intent.getBooleanExtra("watch", false))
+                val u = intent.getStringExtra("url") ?: return START_STICKY
+                val w = intent.getBooleanExtra("watch", false)
+                addSlot(u, intent.getStringExtra("ua") ?: "", intent.getStringExtra("name") ?: "",
+                    resumePath = if (w) resumeFor(this, u) else null, watch = w)
             }
             ACTION_WATCH -> {
                 ensureForegroundQuiet()

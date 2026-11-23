@@ -63,7 +63,12 @@ object Lab {
 
     // ---------- 보고서 ----------
     private val sections = java.util.LinkedHashMap<String, StringBuilder>()
+    /** 열쇠가 바뀌어 재생기로 배우는 중 (원래 앱에서도 배움 기능을 켬) */
+    @Volatile var needKey = false
+    fun rankVariantsPublic(master: String, target: Int) = rankVariants(master, target)
+
     @Synchronized fun add(section: String, line: String) {
+        if (!on) return
         sections.getOrPut(section) { StringBuilder() }.append("[").append(fmt.format(Date())).append("] ").append(line).append('\n')
     }
     @Synchronized fun clear() { sections.clear(); probes.clear(); progress.clear() }
@@ -129,13 +134,13 @@ object Lab {
     private fun probe(slotId: Int, name: String) = probes.getOrPut(slotId) { Probe(slotId, name) }
 
     fun onMaster(slotId: Int, name: String, url: String, body: String) {
-        if (!on) return
+        if (!on && !needKey) return
         val p = probe(slotId, name)
         synchronized(p) { if (p.master == null) { p.master = body; p.masterUrl = url } }
     }
 
     /** 재생기의 방송 목록 요청: 처음 몇 개만 앱이 대신 받아 원본을 남기고 그대로 넘겨줌 */
-    fun wantPlaylist(slotId: Int): Boolean = on && (probes[slotId]?.playlists?.size ?: 0) < 4
+    fun wantPlaylist(slotId: Int): Boolean = (on || needKey) && (probes[slotId]?.playlists?.size ?: 0) < 4
 
     fun onPlaylist(slotId: Int, name: String, url: String, headers: Map<String, String>, body: String) {
         val p = probe(slotId, name)
@@ -155,7 +160,7 @@ object Lab {
     }
 
     fun onSegment(slotId: Int, name: String, url: String, headers: Map<String, String>) {
-        if (!on) return
+        if (!on && !needKey) return
         val p = probe(slotId, name)
         synchronized(p) {
             if (p.segs.size < 40) p.segs.add(url)
@@ -243,6 +248,8 @@ object Lab {
         if (found != null && agree >= 2 && agree == tried) {
             keys[pkey] = found
             appCtx?.let { saveKeys(it) }
+            needKey = false
+            RecordService.addLog("새 풀이 열쇠를 배웠어요 → 다음 녹화부터 다시 직접 받기")
             sb.append("풀이 열쇠 찾음 (pkey $pkey): ").append(found.joinToString("") { "%02x".format(it) }).append(" · ${agree}개 모두 일치\n")
         } else sb.append("풀이 열쇠 아직: 짝 ${tried}개 중 일치 $agree\n")
         synchronized(p) { p.decodeNote = sb.toString() }
@@ -568,6 +575,7 @@ object Lab {
         }, seconds * 1000L)
     }
 
+    fun pickChatPublic(o: org.json.JSONObject) = pickChat(o)
     /** 채팅 한 줄 꺼내기: 닉네임 + 내용 */
     private fun pickChat(o: org.json.JSONObject, d: Int = 0): String? {
         if (d > 6) return null

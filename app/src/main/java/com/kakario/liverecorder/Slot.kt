@@ -175,7 +175,18 @@ class Slot(
     private fun log(s: String) = RecordService.addLog("[$id $host] $s")
     private fun setState(s: String) { if (state != s) { state = s; log("상태: $s") }; onUpdate() }
 
+    /** 스트립챗은 재생기 없이 직접 받기 (번호·열쇠를 모르면 그때만 재생기로) */
+    val direct: Boolean = host.contains("stripchat") && ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("directMode", true)
+    @Volatile private var directOff = false
+    @Volatile private var feederKick = false
+    private val isDirect get() = direct && !directOff
+
     fun start(delayMs: Long = 0) {
+        if (direct) {
+            Thread({ loop() }, "slot-$id").start()
+            Thread({ try { feeder() } catch (e: Exception) { log("직접 받기 오류: ${e.message}") } }, "feed-$id").start()
+            return
+        }
         main.postDelayed({
             if (stopFlag || web != null) return@postDelayed
             // 이어 쓸 파일이 없으면 먼저 가볍게 방송 중인지 물어보고, 꺼져 있으면 페이지를 열지 않음
@@ -190,10 +201,135 @@ class Slot(
 
     /** 사용자가 직접 멈춤 */
     fun isEnded() = state.startsWith("끝")
-    fun stop() { userStopped = true; stopFlag = true; Loading.leave(id) }
+    fun stop() { userStopped = true; stopFlag = true; Loading.leave(id); ChatHub.leave(this) }
 
     /** 앱 종료 등으로 멈춤 (나중에 이어서 녹화할 대상) */
-    fun halt() { stopFlag = true; Loading.leave(id) }
+    fun halt() { stopFlag = true; Loading.leave(id); ChatHub.leave(this) }
+
+    /** 앱이 직접 받은 채팅 (채팅 서버) */
+    fun chatIn(text: String) {
+        if (!wsChat) { wsChat = true; log("채팅을 앱이 직접 받는 중 (채팅 서버)") }
+        onChat(text)
+    }
+
+    // ---------- 직접 받기 (재생기 없음) ----------
+    private val cdnH = mapOf("Origin" to "https://ko.stripchat.com", "Referer" to "https://ko.stripchat.com/", "Accept" to "*/*",
+        "User-Agent" to "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36")
+    private fun cdnGet(u: String): HttpResult = Net.get(u, Captured(u, "seg", cdnH, pageUrl), cdnH["User-Agent"]!!, timeoutMs = 15000, maxBytes = 32 * 1024 * 1024)
+
+    /** 재생기로 바꿈 (번호·열쇠를 모를 때 — 재생기가 받는 동안 배워 둠) */
+    private fun fallbackToPlayer(why: String) {
+        if (directOff) return
+        directOff = true
+        Lab.needKey = Lab.needKey || why.contains("열쇠")
+        log("$why → 이번엔 재생기로 받고, 그동안 배워 둠 (다음부터 직접 받기)")
+        wantOpen = true
+    }
+
+    private fun feeder() {
+        val name = Names.streamerFromUrl(pageUrl)
+        var mid = Watcher.idOf(ctx, pageUrl)
+        if (mid == null) Watcher.apiHeaders?.let { hs ->
+            mid = Watcher.askId("${Watcher.apiBase}/api/front/users/user-ids/" + java.net.URLEncoder.encode(name, "UTF-8"), hs)?.also { Watcher.learnId(ctx, pageUrl, it) }
+        }
+        val id = mid ?: run { fallbackToPlayer("스트리머 번호를 아직 몰라서"); return }
+        log("직접 받기 (재생기 없음) · 번호 $id")
+        ChatHub.join(ctx, id, this)
+        val masterUrl = "https://edge-hls.doppiocdn.org/hls/$id/master/${id}_auto.m3u8?playlistType=lowLatency"
+        var plUrl: String? = null
+        var onBlur = false
+        var lastMaster = 0L
+        var plFail = 0
+        var initSent = ""
+        val seenSeg = LinkedHashSet<String>()
+        var noKeyWarned = false
+        while (!stopFlag && !directOff) {
+            val now = System.currentTimeMillis()
+            // 1) 방송 목록(master)으로 방송 상태·화질 고르기
+            val needMaster = plUrl == null || feederKick || (onBlur && now - lastMaster > 30_000)
+            if (needMaster) {
+                val gap = if (recordStartAt > 0 || out != null) 10_000L else 60_000L   // 녹화 중엔 10초, 대기 중엔 1분마다
+                if (!feederKick && plUrl == null && now - lastMaster < gap) { Thread.sleep(1000); continue }
+                feederKick = false
+                lastMaster = now
+                val mr = try { cdnGet(masterUrl) } catch (e: Exception) { null }
+                if (mr == null) { Thread.sleep(3000); continue }
+                if (mr.code !in 200..299) {
+                    if (out != null && pauseKind != "ended") { pauseKind = "ended"; log("방송 목록이 사라짐(${mr.code}) → 방송 종료로 봄") }
+                    plUrl = null; onBlur = false
+                    continue
+                }
+                val master = String(mr.body)
+                val pk = master.lines().filter { it.startsWith("#EXT-X-MOUFLON:PSCH:") }.map { it.substringAfterLast(':').trim() }.firstOrNull { Lab.keys.containsKey(it) }
+                if (pk == null) { fallbackToPlayer("풀이 열쇠가 바뀜"); return }
+                var picked: String? = null; var forbidden = 0
+                for ((label, u0) in Lab.rankVariantsPublic(master, targetH)) {
+                    val u = u0 + (if (u0.contains('?')) "&" else "?") + "psch=v2&pkey=$pk"
+                    val c = try { cdnGet(u).code } catch (e: Exception) { -1 }
+                    if (c in 200..299) { picked = u; if (plUrl?.substringBefore('?') != u.substringBefore('?')) log("직접 받기 화질: $label"); break }
+                    if (c == 403) forbidden++
+                }
+                if (picked == null && forbidden > 0) {
+                    // 티켓방: 일반 화질은 막힘 → 흐린 화면 전용 목록만 따로 저장
+                    val br = try { cdnGet("https://edge-hls.doppiocdn.org/hls/$id/master/${id}_160p_blurred.m3u8?playlistType=lowLatency") } catch (e: Exception) { null }
+                    val bu = br?.takeIf { it.code in 200..299 }?.let { String(it.body).lines().firstOrNull { l -> l.startsWith("http") && l.contains("blurred") }?.trim() }
+                    if (!onBlur) log("일반 화질이 모두 막힘(403) → 티켓방" + (if (bu != null) ", 흐린 화면만 따로 저장" else ""))
+                    picked = bu?.let { it + (if (it.contains('?')) "&" else "?") + "psch=v2&pkey=$pk" }
+                    onBlur = picked != null
+                } else onBlur = false
+                if (picked == null) { plUrl = null; Thread.sleep(5000); continue }
+                plUrl = picked
+            }
+            // 2) 화질 목록 읽고 새 조각 받기
+            val pu = plUrl ?: continue
+            val r = try { cdnGet(pu) } catch (e: Exception) { null }
+            if (r == null || r.code !in 200..299) {
+                plFail++
+                if (plFail >= 3) { plFail = 0; plUrl = null; feederKick = true }
+                Thread.sleep(1500); continue
+            }
+            plFail = 0
+            val pkey = Regex("""[?&]pkey=([^&]+)""").find(pu)?.groupValues?.get(1) ?: ""
+            val ks = Lab.keys[pkey]
+            if (ks == null) { if (!noKeyWarned) { noKeyWarned = true; log("풀이 열쇠 없음") }; fallbackToPlayer("풀이 열쇠가 바뀜"); return }
+            val ls = String(r.body).lines()
+            for ((i, l0) in ls.withIndex()) {
+                if (stopFlag || directOff) break
+                val l = l0.trim()
+                if (l.startsWith("#EXT-X-MAP:")) {
+                    val u = Regex("""URI="([^"]+)"""").find(l)?.groupValues?.get(1) ?: continue
+                    if (u != initSent) {
+                        val ir = try { cdnGet(u) } catch (e: Exception) { null }
+                        if (ir != null && ir.code in 200..299) {
+                            cache[u.substringBefore('?')] = ir.body
+                            q.offer(Captured(u, "seg", cdnH, pageUrl)); initSent = u
+                        }
+                    }
+                    continue
+                }
+                if (!l.startsWith("#EXT-X-MOUFLON:URI:")) continue
+                val next = ls.getOrNull(i + 1)?.trim() ?: continue
+                if (next.startsWith("#")) continue   // 통째 조각만 (작은 조각은 건너뜀)
+                val full = Lab.decodeUrl(l.removePrefix("#EXT-X-MOUFLON:URI:").trim(), ks) ?: continue
+                val key = full.substringBefore('?')
+                if (!seenSeg.add(key)) continue
+                if (seenSeg.size > 300) seenSeg.remove(seenSeg.first())
+                var body: ByteArray? = null
+                for (t in 0 until 3) {
+                    val sr = try { cdnGet(full) } catch (e: Exception) { null }
+                    if (sr != null && sr.code in 200..299) { body = sr.body; break }
+                    if (sr != null && (sr.code == 403 || sr.code == 404)) break
+                    Thread.sleep(700)
+                }
+                if (body == null) continue
+                countRate(body.size)
+                cache[key] = body
+                trimCache()
+                q.offer(Captured(full, "seg", cdnH, pageUrl))
+            }
+            Thread.sleep(1000)
+        }
+    }
 
     // ---------- 숨은 재생기 ----------
 
@@ -233,7 +369,7 @@ class Slot(
                 if (kind == "hls" && req.method.equals("GET", true) && Lab.wantPlaylist(id)) labPlaylist(url, req)?.let { return it }
                 if (kind != "seg") return null
                 val c = Captured(url, "seg", req.requestHeaders ?: emptyMap(), pageUrl)
-                if (Lab.on) Lab.onSegment(id, streamer.ifEmpty { host }, url, req.requestHeaders ?: emptyMap())
+                if (Lab.on || Lab.needKey) Lab.onSegment(id, streamer.ifEmpty { host }, url, req.requestHeaders ?: emptyMap())
                 // 한 번만 받기: 앱이 대신 받아서 저장용으로 보관하고, 같은 데이터를 재생기에도 넘겨준다
                 if (req.method.equals("GET", true) && !req.requestHeaders.keys.any { it.equals("Range", true) }) {
                     try {
@@ -362,6 +498,7 @@ class Slot(
 
     private fun tryOpen(now: Long) {
         if (!wantOpen || stopFlag) return
+        if (isDirect) { wantOpen = false; feederKick = true; return }   // 직접 받기: 재생기 대신 방송 목록 다시 확인
         if (!Loading.tryEnter(id, now, priority())) {
             if (!openWaitLogged) { openWaitLogged = true; log("다른 방송을 여는 중이라 차례 기다림 (폰 부담 줄이기)") }
             return
@@ -455,7 +592,7 @@ class Slot(
             val r = Net.get(url, c, ua, timeoutMs = 15000, maxBytes = 2 * 1024 * 1024)
             if (r.code !in 200..299) return null
             var text = String(r.body)
-            if (Lab.on && text.contains("#EXT-X-STREAM-INF")) Lab.onMaster(id, streamer.ifEmpty { host }, url, text)
+            if ((Lab.on || Lab.needKey) && text.contains("#EXT-X-STREAM-INF")) Lab.onMaster(id, streamer.ifEmpty { host }, url, text)
             Regex("""/hls/(\d+)/master/""").find(url)?.let { Watcher.learnId(ctx, pageUrl, it.groupValues[1]) }
             if (text.contains("#EXT-X-STREAM-INF")) {
                 val lines = text.lines()
@@ -517,7 +654,7 @@ class Slot(
     @Volatile private var liveSeenAt = 0L
     private var lastFullCheck = System.currentTimeMillis()
     private fun liveCheck(): Boolean? {
-        if (!host.contains("stripchat") || Loading.apiBlocked) return null
+        if (isDirect || !host.contains("stripchat") || Loading.apiBlocked) return null
         val name = Names.streamerFromUrl(pageUrl).ifEmpty { return null }
         return try {
             val r = Net.get("https://$host/api/front/v2/models/username/" + java.net.URLEncoder.encode(name, "UTF-8") + "/cam", null, ua, timeoutMs = 10000, maxBytes = 2 * 1024 * 1024)
@@ -559,6 +696,7 @@ class Slot(
         /** 실험판: 채팅 연결 원본(주소·보낸 것·받은 것)을 보고서에 남김 */
         @android.webkit.JavascriptInterface
         fun raw(kind: String, text: String) {
+            ChatHub.onPageWs(ctx, id, kind, text)
             if (!Lab.on) return
             Lab.onWs(id, kind, text)
             val n = rawCount.merge(kind, 1, Int::plus) ?: 0
@@ -623,7 +761,11 @@ class Slot(
         chatDecided = null; chatAppend = append
         try {
             chat = ChatWriter(p, append)
-            if (append) mediaMs = ChatWriter.lastTimeMs(p)
+            if (append) {
+                mediaMs = ChatWriter.lastTimeMs(p)
+                // 이미 한국어로 판단돼 저장 중이던 파일이면 다시 판단하지 않고 바로 이어 씀
+                if (chat?.txtFile?.let { it.exists() && it.length() > 0 } == true) chatDecided = true
+            }
         } catch (e: Exception) { log("채팅 파일 만들기 실패: ${e.message}") }
     }
 
@@ -853,7 +995,7 @@ class Slot(
                     }
                     val idle = now - lastSegAt
                     // 자동 녹화 칸인데 5분 넘게 영상이 안 나옴(비공개 방송 등) → 칸을 비우고 다시 지켜보기로
-                    if (watch && recordStartAt == 0L && out == null && now - createdAt > 5 * 60_000L && !canAppend()) {
+                    if ((watch || Watcher.isWatched(ctx, pageUrl)) && recordStartAt == 0L && out == null && now - createdAt > 5 * 60_000L && !canAppend() && now - blurAt > 60_000) {
                         log("자동 녹화: 5분 동안 영상이 안 나옴 → 칸 비우고 다시 지켜보기")
                         stopFlag = true; continue
                     }
@@ -875,7 +1017,7 @@ class Slot(
                         appendUsed = true            // 다음 방송은 예전 파일에 이어 붙이지 않음
                         RecordService.fileOpened()   // 이어 녹화용 경로 비우기
                         setState("방송 대기")
-                        if (watch) { log("방송 끝 → 자동 녹화 칸 정리 (즐겨찾기가 계속 지켜봐요)"); stopFlag = true }
+                        if (watch || Watcher.isWatched(ctx, pageUrl)) { log("방송 끝 → 녹화 칸 정리 (즐겨찾기 생방 대기가 계속 지켜봐요)"); stopFlag = true; ChatHub.leave(this) }
                         continue
                     }
                     if (idle > STALL_MS) {

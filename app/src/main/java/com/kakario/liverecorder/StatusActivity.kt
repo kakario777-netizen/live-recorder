@@ -157,12 +157,16 @@ class StatusActivity : Activity() {
                         .setNegativeButton("취소", null).show()
                 })
                 if (compact) row.setOnLongClickListener { retry(sl); true }
+                // 누르면 그 방송 페이지로 (즐겨찾기 추가용)
+                row.setOnClickListener {
+                    setResult(RESULT_OK, Intent().putExtra("action", "open").putExtra(BookmarksActivity.EXTRA_URLS, arrayOf(sl.pageUrl))); finish()
+                }
                 lines[sl.id] = name to info
                 card.addView(row)
             }
             listBox.addView(card)
             if (compact) listBox.addView(TextView(this).apply {
-                text = "길게 누르면 지금 바로 다시 확인"; textSize = 11f; setTextColor(Color.parseColor("#999999")); setPadding(dp(6), dp(4), 0, 0)
+                text = "누르면 방송 페이지로 · 길게 누르면 지금 바로 다시 확인"; textSize = 11f; setTextColor(Color.parseColor("#999999")); setPadding(dp(6), dp(4), 0, 0)
             })
         }
     }
