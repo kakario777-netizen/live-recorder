@@ -508,6 +508,11 @@ class MainActivity : Activity() {
 
     /** 녹화 요청: 이 폰이 리모컨이면 담당 폰으로 명령, 아니면 이 폰에서 녹화 */
     private fun requestRecord(url: String, ua: String, name: String) {
+        if (CloudBm.viewer(this)) {
+            CloudBm.requestRecord(this, url, name)
+            Toast.makeText(this, "뷰어 모드: 녹화폰에 '${name.ifEmpty { "이 방송" }}' 녹화를 부탁했어요", Toast.LENGTH_LONG).show()
+            return
+        }
         if (Sync.isRemote(this)) {
             Sync.sendCommand(this, "add", url, name, ua) { r -> runOnUiThread { Toast.makeText(this, r, Toast.LENGTH_LONG).show() } }
             return
@@ -576,7 +581,8 @@ class MainActivity : Activity() {
                 val names = data.getStringArrayExtra(BookmarksActivity.EXTRA_NAMES) ?: return
                 if (urls.size == 1) requestRecord(urls[0], web.settings.userAgentString, Names.clean(names[0]))
                 else {
-                    if (Sync.isRemote(this)) urls.indices.forEach { i -> Sync.sendCommand(this, "add", urls[i], Names.clean(names[i]), web.settings.userAgentString) {} }
+                    if (CloudBm.viewer(this)) urls.indices.forEach { i -> CloudBm.requestRecord(this, urls[i], Names.clean(names[i])) }
+                    else if (Sync.isRemote(this)) urls.indices.forEach { i -> Sync.sendCommand(this, "add", urls[i], Names.clean(names[i]), web.settings.userAgentString) {} }
                     else { askBattery(); urls.indices.forEach { i -> RecordService.add(this, urls[i], web.settings.userAgentString, Names.clean(names[i])) } }
                     Toast.makeText(this, "${urls.size}개를 녹화에 걸었어요 (방송 중이 아니면 방송 대기)", Toast.LENGTH_LONG).show()
                 }
@@ -761,7 +767,7 @@ class MainActivity : Activity() {
         val items = arrayOf("다운 화질 (사이트별)", "NAS 업로드·폰끼리 동기화", "아이콘 이름 표시: " + (if (labels) "켜짐 (누르면 끄기)" else "꺼짐 (누르면 켜기)"),
             "진단 (문제 생겼을 때)", "녹화 기록 보기", "업데이트 확인",
             "채팅 저장: " + (if (prefs.getBoolean("chatKoreanOnly", true)) "한국어 방송만 (켜짐 · 누르면 끄기)" else "모든 방송 (꺼짐 · 누르면 켜기)"),
-            "폰 역할 · 즐겨찾기 맞추기: " + (if (CloudBm.recordHere(this)) "녹화폰" else "원격폰"),
+            "폰 역할 · 즐겨찾기 맞추기: " + (if (CloudBm.recordHere(this)) "녹화폰" else if (CloudBm.viewer(this)) "원격폰(뷰어)" else "원격폰(다운로드)"),
             "녹화폰 현황 보기 (원격폰에서)") +
             (if (Lab.on) arrayOf("실험실 (가볍게 받기 시험)") else emptyArray())
         AlertDialog.Builder(this)
@@ -1064,6 +1070,13 @@ class MainActivity : Activity() {
         group.addView(rRec); group.addView(rRem)
         group.check(if (CloudBm.recordHere(ctx)) rRec.id else rRem.id)
         box.addView(group)
+        val vw = CheckBox(this).apply {
+            text = "원격폰은 뷰어 모드 (이 폰은 녹화 안 함 · 녹화 버튼은 녹화폰에 부탁)\n끄면 다운로드 모드: 이 폰에서도 따로 녹화"
+            isChecked = ctx.getSharedPreferences("cloudBm", MODE_PRIVATE).getBoolean("viewer", true)
+        }
+        box.addView(vw)
+        group.setOnCheckedChangeListener { _, id -> vw.isEnabled = id == rRem.id }
+        vw.isEnabled = !CloudBm.recordHere(ctx)
         val nt = CheckBox(this).apply { text = "녹화폰 ↔ 원격폰 알림 사용 (녹화 완료 · 업로드 완료)"; isChecked = CloudBm.notifyOn(ctx) }
         box.addView(nt)
         AlertDialog.Builder(this)
@@ -1073,8 +1086,9 @@ class MainActivity : Activity() {
                 val rec = group.checkedRadioButtonId == rRec.id
                 CloudBm.setRecordHere(ctx, rec)
                 CloudBm.setNotifyOn(ctx, nt.isChecked)
+                CloudBm.setViewer(ctx, vw.isChecked)
                 if (Watcher.any(ctx)) RecordService.startWatch(ctx)
-                Toast.makeText(ctx, if (rec) "이 폰은 녹화폰이에요" else "이 폰은 원격폰이에요 (녹화는 따로, 알림은 받기만)", Toast.LENGTH_SHORT).show()
+                Toast.makeText(ctx, if (rec) "이 폰은 녹화폰이에요" else if (vw.isChecked) "원격폰 · 뷰어 모드 (녹화는 녹화폰에서)" else "원격폰 · 다운로드 모드 (이 폰에서도 따로 녹화)", Toast.LENGTH_SHORT).show()
                 Thread { CloudBm.sync(applicationContext) }.start()
             }
             .setNeutralButton("지금 맞추기") { _, _ ->

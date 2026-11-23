@@ -41,6 +41,20 @@ object CloudBm {
         return p.getString("dev", null) ?: java.util.UUID.randomUUID().toString().take(8).also { p.edit().putString("dev", it).apply() }
     }
     fun notifyOn(ctx: Context) = prefs(ctx).getBoolean("notify", true)
+    /** 원격폰 뷰어 모드: 이 폰은 녹화 안 함 (녹화 버튼은 녹화폰에 부탁) */
+    fun viewer(ctx: Context) = !recordHere(ctx) && prefs(ctx).getBoolean("viewer", true)
+    fun setViewer(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("viewer", on).apply()
+
+    /** 원격폰(뷰어) → 녹화폰: 이 방송 녹화해 줘 */
+    fun requestRecord(ctx: Context, url: String, name: String) {
+        val app = ctx.applicationContext
+        Thread {
+            try {
+                val js = JSONObject().put("title", "녹화 요청").put("body", "$url\n$name").put("from", deviceId(app)).toString()
+                post("$RELAY_URL?notify=1", js)
+            } catch (_: Exception) {}
+        }.start()
+    }
     fun setNotifyOn(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("notify", on).apply()
 
     /** 원격폰: 녹화폰에 '현황 보내 줘' */

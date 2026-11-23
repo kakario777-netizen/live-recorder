@@ -49,6 +49,17 @@ class PushService : FirebaseMessagingService() {
         if (d["t"] == "req" && CloudBm.recordHere(this)) {
             CloudBm.notifyRemote(this, "녹화폰 현황", CloudBm.statusText(), force = true)
         }
+        // 원격폰(뷰어)이 녹화를 부탁함 → 녹화폰이 받아서 녹화
+        if (d["t"] == "note" && d["src"] != CloudBm.deviceId(this) && CloudBm.recordHere(this) && d["title"] == "녹화 요청") {
+            val parts = d["body"].orEmpty().split('\n')
+            val url = parts.getOrNull(0).orEmpty(); val name = parts.getOrNull(1).orEmpty()
+            if (url.startsWith("http")) {
+                val ua = try { android.webkit.WebSettings.getDefaultUserAgent(this) } catch (e: Exception) { "" }
+                RecordService.add(this, url, ua, name)
+                RecordService.addLog("원격폰 요청으로 녹화 추가: ${name.ifEmpty { url }}")
+                CloudBm.notifyRemote(this, "녹화 요청 받음", name.ifEmpty { url }, force = true)
+            }
+        }
         // 녹화폰에서 온 알림: 원격폰만 처리
         if (d["t"] == "note" && d["src"] != CloudBm.deviceId(this) && !CloudBm.recordHere(this)) {
             val title = d["title"].orEmpty(); val body = d["body"].orEmpty()
