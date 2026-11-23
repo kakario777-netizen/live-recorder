@@ -9,7 +9,8 @@ import org.json.JSONObject
  * 폰끼리 동기화할 때 합치기 위해 항목마다 바뀐 시각(t)과 삭제 표시(del)를 같이 저장한다.
  */
 object Bookmarks {
-    class Item(val name: String, val url: String, val t: Long = System.currentTimeMillis(), val del: Boolean = false)
+    /** cat = 폴더 이름 (빈 글자면 폴더 없음) */
+    class Item(val name: String, val url: String, val t: Long = System.currentTimeMillis(), val del: Boolean = false, val cat: String = "")
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
 
@@ -20,12 +21,12 @@ object Bookmarks {
 
     fun fromJson(a: JSONArray): List<Item> = (0 until a.length()).map {
         val o = a.getJSONObject(it)
-        Item(o.optString("name"), o.getString("url"), o.optLong("t", 0), o.optBoolean("del", false))
+        Item(o.optString("name"), o.getString("url"), o.optLong("t", 0), o.optBoolean("del", false), o.optString("cat"))
     }
 
     fun toJson(l: List<Item>): JSONArray {
         val a = JSONArray()
-        l.forEach { a.put(JSONObject().put("name", it.name).put("url", it.url).put("t", it.t).put("del", it.del)) }
+        l.forEach { a.put(JSONObject().put("name", it.name).put("url", it.url).put("t", it.t).put("del", it.del).put("cat", it.cat)) }
         return a
     }
 
@@ -46,11 +47,39 @@ object Bookmarks {
     }
 
     /** 같은 주소가 있으면 이름만 바꿈 */
-    fun add(ctx: Context, name: String, url: String) =
-        changed(ctx, listOf(Item(name, url)) + all(ctx).filter { it.url != url })
+    fun add(ctx: Context, name: String, url: String, cat: String? = null) {
+        val old = all(ctx).firstOrNull { it.url == url && !it.del }
+        changed(ctx, listOf(Item(name, url, cat = cat ?: old?.cat ?: "")) + all(ctx).filter { it.url != url })
+    }
 
     fun rename(ctx: Context, url: String, name: String) =
-        changed(ctx, all(ctx).map { if (it.url == url) Item(name, url) else it })
+        changed(ctx, all(ctx).map { if (it.url == url) Item(name, url, cat = it.cat) else it })
+
+    fun setCat(ctx: Context, url: String, cat: String) =
+        changed(ctx, all(ctx).map { if (it.url == url) Item(it.name, url, cat = cat) else it })
+
+    // ---------- 폴더 ----------
+    /** 폴더 목록 (비어 있는 폴더도 유지). 항목에만 있는 폴더도 합침 */
+    fun cats(ctx: Context): List<String> {
+        val saved = try { JSONArray(prefs(ctx).getString("bmCats", "[]")).let { a -> (0 until a.length()).map { a.getString(it) } } } catch (e: Exception) { emptyList() }
+        return (saved + list(ctx).map { it.cat }.filter { it.isNotEmpty() }).distinct()
+    }
+    private fun saveCats(ctx: Context, l: List<String>) =
+        prefs(ctx).edit().putString("bmCats", JSONArray(l.distinct()).toString()).apply()
+
+    fun addCat(ctx: Context, name: String) { if (name.isNotBlank()) saveCats(ctx, cats(ctx) + name.trim()) }
+
+    fun renameCat(ctx: Context, old: String, new: String) {
+        if (new.isBlank()) return
+        saveCats(ctx, cats(ctx).map { if (it == old) new.trim() else it })
+        changed(ctx, all(ctx).map { if (it.cat == old && !it.del) Item(it.name, it.url, cat = new.trim()) else it })
+    }
+
+    /** 폴더 지우기: 안의 즐겨찾기는 지우지 않고 '폴더 없음'으로 */
+    fun removeCat(ctx: Context, name: String) {
+        saveCats(ctx, cats(ctx).filter { it != name })
+        changed(ctx, all(ctx).map { if (it.cat == name && !it.del) Item(it.name, it.url, cat = "") else it })
+    }
 
     fun remove(ctx: Context, url: String) =
         changed(ctx, all(ctx).map { if (it.url == url) Item(it.name, url, System.currentTimeMillis(), true) else it })

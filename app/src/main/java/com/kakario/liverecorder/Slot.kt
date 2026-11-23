@@ -116,7 +116,9 @@ class Slot(
               }
               function W(u, p){
                 var ws = (p !== undefined) ? new NW(u, p) : new NW(u);
-                ws.addEventListener('message', function(ev){ try { onData(ev.data); } catch(e){} });
+                try { LRChat.raw('연결', String(u) + (p !== undefined ? ' | 프로토콜 ' + String(p) : '')); } catch(e){}
+                try { var s0 = ws.send.bind(ws); ws.send = function(d){ try { LRChat.raw('보냄', typeof d === 'string' ? d : '(이진 ' + (d.byteLength || d.size || 0) + '바이트)'); } catch(e){} return s0(d); }; } catch(e){}
+                ws.addEventListener('message', function(ev){ try { LRChat.raw('받음', typeof ev.data === 'string' ? ev.data : '(이진)'); } catch(e){} try { onData(ev.data); } catch(e){} });
                 return ws;
               }
               W.prototype = NW.prototype; W.CONNECTING = 0; W.OPEN = 1; W.CLOSING = 2; W.CLOSED = 3;
@@ -217,6 +219,10 @@ class Slot(
                 val url = req.url.toString()
                 val kind = Sniff.classify(url)
                 if (kind == "hls") playlistAt = System.currentTimeMillis()
+                if (Lab.on && (url.contains("/api/") || url.contains("websocket") || url.contains("token") || url.contains("chat"))) {
+                    val n = rawCount.merge("api", 1, Int::plus) ?: 0
+                    if (n <= 60) Lab.add("페이지가 부른 주소 ${id}번 ${streamer.ifEmpty { host }}", req.method + " " + url.take(300))
+                }
                 if (kind == "hls" && req.method.equals("GET", true) && !url.contains("_HLS_msn")) {
                     pinBestQuality(url, req)?.let { return it }
                     if (Lab.wantPlaylist(id)) labPlaylist(url, req)?.let { return it }
@@ -541,10 +547,20 @@ class Slot(
 
     @Volatile private var wsChat = false
 
+    private val rawCount = java.util.concurrent.ConcurrentHashMap<String, Int>()
     private inner class ChatBridge {
         /** 화면에서 읽은 채팅 (웹소켓에서 받고 있으면 무시) */
         @android.webkit.JavascriptInterface
         fun msg(text: String) { if (!wsChat) onChat(text) }
+
+        /** 실험판: 채팅 연결 원본(주소·보낸 것·받은 것)을 보고서에 남김 */
+        @android.webkit.JavascriptInterface
+        fun raw(kind: String, text: String) {
+            if (!Lab.on) return
+            val n = rawCount.merge(kind, 1, Int::plus) ?: 0
+            val limit = when (kind) { "연결" -> 10; "보냄" -> 25; else -> 40 }
+            if (n <= limit) Lab.add("채팅 연결 원본 ${id}번 ${streamer.ifEmpty { host }}", "$kind: " + text.take(2000))
+        }
 
         /** 채팅 연결(웹소켓)에서 받은 채팅 "닉네임\n내용" */
         @android.webkit.JavascriptInterface
@@ -933,7 +949,7 @@ class Slot(
                     if (out == null) {
                         // 시작 전: 720p 이상이 나올 때까지 기다림 (1분 넘으면 그때 화질로 시작)
                         val waited = now - firstSegAt
-                        if (h in 1 until targetH && waited < WAIT_HQ_MS) {
+                        if (targetH < 9999 && h in 1 until targetH && waited < WAIT_HQ_MS) {
                             setState("화질 대기중")
                             cache.remove(key)
                             continue
@@ -947,7 +963,7 @@ class Slot(
                             sleepPlayer()
                             continue
                         }
-                        if (h in 1 until targetH) log("15초 동안 ${targetH}p가 안 잡혀 ${h}p로 녹화 시작")
+                        if (targetH < 9999 && h in 1 until targetH) log("15초 동안 ${targetH}p가 안 잡혀 ${h}p로 녹화 시작")
                         out = openFile(if (mp4) "mp4" else "ts")
                         recordStartAt = now
                         openChat(path, false)
@@ -1008,12 +1024,38 @@ class Slot(
         }
     }
 
+    /** 현황 화면용: 0 녹화 중, 1 일시정지(이어받기), 2 준비·순서 대기, 3 방송 대기, 4 끝 */
+    fun group(): Int = when {
+        state.startsWith("끝") -> 4
+        state == "녹화 중" -> 0
+        state == "일시정지" -> 1
+        state == "방송 대기" -> 3
+        else -> 2
+    }
+
+    /** 현황 화면용 짧은 설명 한 줄 */
+    fun detail(): String {
+        val now = System.currentTimeMillis()
+        val min = if (recordStartAt > 0) (now - recordStartAt) / 60000 else 0
+        fun t(m: Long) = if (m >= 60) "${m / 60}시간 ${m % 60}분" else "${m}분"
+        return when (state) {
+            "녹화 중" -> listOf(t(min), "${bytes / 1024 / 1024}MB", (quality + " " + codec).trim(), "${rateBps() / 1024}KB/s").filter { it.isNotBlank() }.joinToString("  ·  ") +
+                (if (noAudio) "  ·  소리 없음!" else "")
+            "일시정지" -> (when (pauseKind) { "ticket" -> if (blurOut != null) "티켓방 (흐린 화면 따로 저장 중)" else "티켓방"; "ended" -> "방송 종료 확인 중"; else -> "끊김" }) +
+                "  ·  ${(now - lastSegAt) / 60000}분째  ·  ${bytes / 1024 / 1024}MB"
+            "방송 대기" -> "켜지면 자동으로 녹화"
+            "화질 대기중" -> "${Quality.label(targetH)} 기다리는 중"
+            "순서 대기" -> "속도 한도가 꽉 차서 차례 기다림"
+            else -> state
+        }
+    }
+
     fun summary(): String {
         val min = if (recordStartAt > 0) (System.currentTimeMillis() - recordStartAt) / 60000 else 0
         return when (state) {
             "일시정지" -> "일시정지 (" + (when (pauseKind) { "ticket" -> if (blurOut != null) "티켓방 · 흐린 화면 따로 저장 중" else "티켓방"; "ended" -> "방송 종료"; else -> "끊김" }) + " · ${(System.currentTimeMillis() - lastSegAt) / 60000}분째) · ${bytes / 1024 / 1024}MB"
             "방송 대기" -> "방송 대기 (켜지면 자동 녹화)"
-            "화질 대기중" -> "${targetH}p 대기중"
+            "화질 대기중" -> "${Quality.label(targetH)} 대기중"
             "녹화 중" -> "$state · ${min}분 · ${bytes / 1024 / 1024}MB" + (if (quality.isNotEmpty()) " · $quality" else "") +
                 (if (codec.isNotEmpty()) " $codec" else "") + (if (noAudio) " · 소리 없음!" else "") +
                 " · ${rateBps() / 1024}KB/s"

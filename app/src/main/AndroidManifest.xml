@@ -21,6 +21,8 @@
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="true">
 
+        <activity android:name=".BookmarksActivity" android:label="즐겨찾기" />
+        <activity android:name=".StatusActivity" android:label="녹화 현황" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

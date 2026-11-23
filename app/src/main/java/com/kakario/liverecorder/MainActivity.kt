@@ -557,6 +557,29 @@ class MainActivity : Activity() {
 
     /** 녹화 현황: 칸마다 상태와 중지 버튼, 아래에 '이 방송 추가' */
     private fun showSlots() {
+        startActivityForResult(Intent(this, StatusActivity::class.java), StatusActivity.REQ)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK || data == null) return
+        when (data.getStringExtra("action")) {
+            "add" -> if (requestCode == BookmarksActivity.REQ) addBookmark(data.getStringExtra(BookmarksActivity.EXTRA_CAT)) else addRecording()
+            "open" -> data.getStringArrayExtra(BookmarksActivity.EXTRA_URLS)?.firstOrNull()?.let { u -> urlBox.setText(u); Sniff.clear(); web.loadUrl(u) }
+            "record" -> {
+                val urls = data.getStringArrayExtra(BookmarksActivity.EXTRA_URLS) ?: return
+                val names = data.getStringArrayExtra(BookmarksActivity.EXTRA_NAMES) ?: return
+                if (urls.size == 1) requestRecord(urls[0], web.settings.userAgentString, Names.clean(names[0]))
+                else {
+                    if (Sync.isRemote(this)) urls.indices.forEach { i -> Sync.sendCommand(this, "add", urls[i], Names.clean(names[i]), web.settings.userAgentString) {} }
+                    else { askBattery(); urls.indices.forEach { i -> RecordService.add(this, urls[i], web.settings.userAgentString, Names.clean(names[i])) } }
+                    Toast.makeText(this, "${urls.size}개를 녹화에 걸었어요 (방송 중이 아니면 방송 대기)", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun showSlotsOld() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(8)) }
         val head = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#666666")); setPadding(0, 0, 0, dp(6)) }
         lateinit var dlg: AlertDialog
@@ -853,7 +876,7 @@ class MainActivity : Activity() {
     }
 
     /** 지금 페이지를 즐겨찾기 — 스트리머 이름을 이름으로 추천, 고친 뒤 저장 */
-    private fun addBookmark() {
+    private fun addBookmark(cat: String? = null) {
         val page = web.url ?: currentPage
         if (!page.startsWith("http")) { Toast.makeText(this, "먼저 방송 페이지를 열어 주세요", Toast.LENGTH_SHORT).show(); return }
         val guess = Names.streamerFromUrl(page).ifEmpty { Names.streamerFromTitle(web.title ?: "") }.ifEmpty { Names.siteName(page) }
@@ -871,7 +894,7 @@ class MainActivity : Activity() {
             .setView(box)
             .setPositiveButton("저장") { _, _ ->
                 val n = input.text.toString().trim().ifEmpty { guess }
-                Bookmarks.add(this, n, page)
+                Bookmarks.add(this, n, page, cat?.takeIf { it.isNotEmpty() })
                 Toast.makeText(this, "즐겨찾기에 저장했어요: $n", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("취소", null)
@@ -881,6 +904,10 @@ class MainActivity : Activity() {
 
     /** 즐겨찾기 목록: 누르면 열기, '녹화'로 바로 녹화(방송 대기) 추가, 길게 누르면 이름 바꾸기·삭제 */
     private fun showBookmarks() {
+        startActivityForResult(Intent(this, BookmarksActivity::class.java), BookmarksActivity.REQ)
+    }
+
+    private fun showBookmarksOld() {
         val list = Bookmarks.list(this)
         if (list.isEmpty()) {
             AlertDialog.Builder(this).setTitle("즐겨찾기")
