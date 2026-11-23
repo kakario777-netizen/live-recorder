@@ -26,6 +26,18 @@ object Sync {
     fun active(ctx: Context) = role(ctx) != SOLO && FtpConfig.ready(ctx)
     fun isRemote(ctx: Context) = role(ctx) == REMOTE && FtpConfig.ready(ctx)
     fun isRecorder(ctx: Context) = role(ctx) == RECORDER && FtpConfig.ready(ctx)
+    /** 즐겨찾기만 폰끼리 맞추기 (녹화는 폰마다 따로) */
+    fun bmOn(ctx: Context) = prefs(ctx).getBoolean("bmSync", false) && FtpConfig.ready(ctx)
+    private var lastPull = 0L
+    /** 앱 화면을 열 때 등: 1분 안에 한 적 없으면 NAS와 맞춤 */
+    fun pullSoon(ctx: Context, minGapMs: Long = 60_000) {
+        if (!bmOn(ctx) && !active(ctx)) return
+        val now = System.currentTimeMillis()
+        if (now - lastPull < minGapMs) return
+        lastPull = now
+        val app = ctx.applicationContext
+        Thread { syncData(app) }.start()
+    }
 
     private fun dir(ctx: Context) = FtpConfig.folder(ctx).trimEnd('/') + "/.sync"
     private val device: String get() = Build.MODEL
@@ -70,9 +82,18 @@ object Sync {
         ftp(ctx) { f ->
             val d = dir(ctx)
             val remoteB = read(f, "$d/bookmarks.json")?.let { runCatching { Bookmarks.fromJson(JSONArray(it)) }.getOrNull() } ?: emptyList()
-            val merged = Bookmarks.merge(Bookmarks.all(ctx), remoteB)
+            val local = Bookmarks.all(ctx)
+            // 생방 대기(자동 녹화)는 폰마다 따로: 두 폰이 같은 방송을 겹쳐 받지 않게
+            val myWatch = local.filter { it.watch }.map { it.url }.toSet()
+            val merged = Bookmarks.merge(local, remoteB).map { Bookmarks.Item(it.name, it.url, it.t, it.del, it.cat, it.url in myWatch) }
             Bookmarks.saveAll(ctx, merged)
-            write(f, "$d/bookmarks.json", Bookmarks.toJson(merged).toString())
+            write(f, "$d/bookmarks.json", Bookmarks.toJson(merged.map { Bookmarks.Item(it.name, it.url, it.t, it.del, it.cat, false) }).toString())
+            // 폴더 이름도 합침
+            val rc = read(f, "$d/bmcats.json")?.let { runCatching { JSONArray(it) }.getOrNull() }
+            val cats = (Bookmarks.cats(ctx) + (rc?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList())).distinct()
+            Bookmarks.setCats(ctx, cats)
+            write(f, "$d/bmcats.json", JSONArray(cats).toString())
+            if (role(ctx) == SOLO) return@ftp "즐겨찾기 맞춤 완료 (${merged.count { !it.del }}개)"
 
             val remoteS = read(f, "$d/settings.json")?.let { runCatching { JSONObject(it) }.getOrNull() }
             val localS = localSettings(ctx)
@@ -92,7 +113,7 @@ object Sync {
 
     /** 바뀐 내용을 곧 NAS에 반영 (여러 번 바뀌어도 한 번만) */
     fun pushSoon(ctx: Context) {
-        if (!active(ctx)) return
+        if (!active(ctx) && !bmOn(ctx)) return
         val app = ctx.applicationContext
         synchronized(this) {
             if (pushThread?.isAlive == true) return

@@ -72,6 +72,7 @@ object Bookmarks {
     private fun saveCats(ctx: Context, l: List<String>) =
         prefs(ctx).edit().putString("bmCats", JSONArray(l.distinct()).toString()).apply()
 
+    fun setCats(ctx: Context, l: List<String>) = saveCats(ctx, l)
     fun addCat(ctx: Context, name: String) { if (name.isNotBlank()) saveCats(ctx, cats(ctx) + name.trim()) }
 
     fun renameCat(ctx: Context, old: String, new: String) {

@@ -205,6 +205,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         updater.onResume()
+        Sync.pullSoon(this)
         if (RecordService.running) RecordService.addLog("앱 화면 열림 (탭 ${tabs.size}개" + (web.url?.let { ", 지금 탭: " + Names.siteName(it) } ?: "") + ")")
     }
 
@@ -757,7 +758,8 @@ class MainActivity : Activity() {
         val labels = prefs.getBoolean("showLabels", true)
         val items = arrayOf("다운 화질 (사이트별)", "NAS 업로드·폰끼리 동기화", "아이콘 이름 표시: " + (if (labels) "켜짐 (누르면 끄기)" else "꺼짐 (누르면 켜기)"),
             "진단 (문제 생겼을 때)", "녹화 기록 보기", "업데이트 확인",
-            "채팅 저장: " + (if (prefs.getBoolean("chatKoreanOnly", true)) "한국어 방송만 (켜짐 · 누르면 끄기)" else "모든 방송 (꺼짐 · 누르면 켜기)")) +
+            "채팅 저장: " + (if (prefs.getBoolean("chatKoreanOnly", true)) "한국어 방송만 (켜짐 · 누르면 끄기)" else "모든 방송 (꺼짐 · 누르면 켜기)"),
+            "즐겨찾기 폰끼리 맞추기: " + (if (prefs.getBoolean("bmSync", false)) "켜짐 (누르면 끄기)" else "꺼짐 (누르면 켜기)")) +
             (if (Lab.on) arrayOf("실험실 (가볍게 받기 시험)") else emptyArray())
         AlertDialog.Builder(this)
             .setTitle("설정")
@@ -774,7 +776,17 @@ class MainActivity : Activity() {
                         prefs.edit().putBoolean("chatKoreanOnly", on).apply()
                         Toast.makeText(this, if (on) "처음 채팅 15줄쯤 보고 한국어가 있을 때만 채팅을 저장해요" else "모든 방송의 채팅을 저장해요", Toast.LENGTH_LONG).show()
                     }
-                    7 -> showLab()
+                    7 -> {
+                        if (!FtpConfig.ready(this)) { Toast.makeText(this, "먼저 'NAS 업로드' 설정을 해 주세요 (즐겨찾기를 NAS에 두고 맞춰요)", Toast.LENGTH_LONG).show(); return@setItems }
+                        val on = !prefs.getBoolean("bmSync", false)
+                        prefs.edit().putBoolean("bmSync", on).apply()
+                        if (on) Thread {
+                            val r = Sync.syncData(this)
+                            runOnUiThread { Toast.makeText(this, r, Toast.LENGTH_LONG).show() }
+                        }.start()
+                        else Toast.makeText(this, "즐겨찾기 맞추기를 껐어요", Toast.LENGTH_SHORT).show()
+                    }
+                    8 -> showLab()
                 }
             }
             .setNegativeButton("닫기", null)

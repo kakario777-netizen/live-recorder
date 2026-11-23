@@ -53,6 +53,7 @@ object Watcher {
         val h = mapOf("Origin" to "https://ko.stripchat.com", "Referer" to "https://ko.stripchat.com/", "Accept" to "*/*",
             "User-Agent" to "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36")
         while (RecordService.instance != null) {
+            if (Sync.bmOn(ctx)) Sync.pullSoon(ctx, 5 * 60_000L)   // 다른 폰에서 바꾼 즐겨찾기 5분마다 받아 옴
             val list = watched(ctx)
             if (list.isEmpty()) { status.clear(); Thread.sleep(15_000); continue }
             val t0 = System.currentTimeMillis()
