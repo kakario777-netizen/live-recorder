@@ -17,7 +17,15 @@ object CloudBm {
         okhttp3.OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).followRedirects(true).build()
     }
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("cloudBm", Context.MODE_PRIVATE)
-    fun url(ctx: Context) = prefs(ctx).getString("url", "") ?: ""
+    /** 기본 주소 (내 구글 스크립트) — 두 폰 모두 설정 없이 바로 맞춰지게 앱에 넣어 둠 */
+    private val DEFAULT_URL: String by lazy {
+        try {
+            val k = "lrbm2026".toByteArray()
+            val b = android.util.Base64.decode("==QVXh0VCJDFBEGY1hmXk8FNOpWZnxRJEpxDZp3ADIhF541CbNmLPhAP+dURThBOl0DVxNXX+ACGvM0AzdHLWdBWOAnAFYQIL4QVLZVes0UADVUXCFFDP0VAZFlHXFQBdMQUcQkQEAREfkRHKEUHWYAB".reversed(), android.util.Base64.DEFAULT)
+            String(ByteArray(b.size) { (b[it].toInt() xor k[it % k.size].toInt()).toByte() })
+        } catch (e: Exception) { "" }
+    }
+    fun url(ctx: Context) = prefs(ctx).getString("url", null)?.takeIf { it.isNotBlank() } ?: DEFAULT_URL
     fun on(ctx: Context) = url(ctx).startsWith("https://script.google.com/")
     fun setUrl(ctx: Context, u: String) = prefs(ctx).edit().putString("url", u.trim()).putLong("ver", 0).putBoolean("dirty", true).apply()
     /** 이 폰에서 생방 대기(자동 녹화)를 할지 — 녹화 안 하는 폰은 꺼 둠 */
