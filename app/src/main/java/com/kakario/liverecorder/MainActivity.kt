@@ -761,7 +761,8 @@ class MainActivity : Activity() {
         val items = arrayOf("다운 화질 (사이트별)", "NAS 업로드·폰끼리 동기화", "아이콘 이름 표시: " + (if (labels) "켜짐 (누르면 끄기)" else "꺼짐 (누르면 켜기)"),
             "진단 (문제 생겼을 때)", "녹화 기록 보기", "업데이트 확인",
             "채팅 저장: " + (if (prefs.getBoolean("chatKoreanOnly", true)) "한국어 방송만 (켜짐 · 누르면 끄기)" else "모든 방송 (꺼짐 · 누르면 켜기)"),
-            "폰 역할 · 즐겨찾기 맞추기: " + (if (CloudBm.recordHere(this)) "녹화폰" else "원격폰")) +
+            "폰 역할 · 즐겨찾기 맞추기: " + (if (CloudBm.recordHere(this)) "녹화폰" else "원격폰"),
+            "녹화폰 현황 보기 (원격폰에서)") +
             (if (Lab.on) arrayOf("실험실 (가볍게 받기 시험)") else emptyArray())
         AlertDialog.Builder(this)
             .setTitle("설정")
@@ -779,7 +780,8 @@ class MainActivity : Activity() {
                         Toast.makeText(this, if (on) "처음 채팅 15줄쯤 보고 한국어가 있을 때만 채팅을 저장해요" else "모든 방송의 채팅을 저장해요", Toast.LENGTH_LONG).show()
                     }
                     7 -> showCloudBm()
-                    8 -> showLab()
+                    8 -> askRecorderStatus()
+                    9 -> showLab()
                 }
             }
             .setNegativeButton("닫기", null)
@@ -1029,6 +1031,20 @@ class MainActivity : Activity() {
                 runOnUiThread { showDiag(text, saved) }
             }.start()
         }
+    }
+
+    /** 원격폰: 녹화폰 현황을 물어보고 답이 오면 팝업 */
+    private fun askRecorderStatus() {
+        if (CloudBm.recordHere(this)) { Toast.makeText(this, "이 폰이 녹화폰이에요. 설정 '폰 역할'에서 원격폰으로 바꾼 폰에서 써 주세요.", Toast.LENGTH_LONG).show(); return }
+        val wait = AlertDialog.Builder(this).setTitle("녹화폰 현황").setMessage("녹화폰에 물어보는 중… (보통 2~5초)").setNegativeButton("닫기", null).show()
+        Push.onStatus = { text -> runOnUiThread {
+            if (wait.isShowing) wait.dismiss()
+            AlertDialog.Builder(this).setTitle("녹화폰 현황").setMessage(text)
+                .setPositiveButton("새로고침") { _, _ -> askRecorderStatus() }
+                .setNegativeButton("닫기", null).show()
+        } }
+        CloudBm.askStatus(this)
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ if (wait.isShowing) wait.setMessage("30초 동안 답이 없어요. 녹화폰이 꺼져 있거나 인터넷이 안 될 수 있어요.") }, 30_000)
     }
 
     /** 폰 역할 · 즐겨찾기 맞추기 (메인 계정 드라이브) · 녹화폰 알림 */

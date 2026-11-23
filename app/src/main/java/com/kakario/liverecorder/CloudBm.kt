@@ -43,9 +43,36 @@ object CloudBm {
     fun notifyOn(ctx: Context) = prefs(ctx).getBoolean("notify", true)
     fun setNotifyOn(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("notify", on).apply()
 
+    /** 원격폰: 녹화폰에 '현황 보내 줘' */
+    @Volatile var statusAskedAt = 0L
+    fun askStatus(ctx: Context) {
+        statusAskedAt = System.currentTimeMillis()
+        Thread { try { post("$RELAY_URL?ping=req", "") } catch (_: Exception) {} }.start()
+    }
+
+    /** 녹화폰: 지금 현황을 짧게 (푸시 한 장 4KB 안에 들어가게) */
+    fun statusText(): String {
+        val now = System.currentTimeMillis()
+        val l = RecordService.list().sortedWith(compareBy({ it.group() }, { it.id }))
+        val rec = l.filter { it.group() == 0 }
+        val sb = StringBuilder()
+        sb.append("받는 중 ${rec.size}개 · ${RecordService.rateText()} · 등록 ${l.size}개\n")
+        for (s in l) {
+            if (sb.length > 3000) { sb.append("… 외 ${l.size - l.indexOf(s)}개\n"); break }
+            val min = if (s.recordStartAt > 0) " ${(now - s.recordStartAt) / 60000}분" else ""
+            val mb = if (s.bytes > 0) " ${s.bytes / 1024 / 1024}MB" else ""
+            sb.append("· ${s.streamer.ifEmpty { s.host }.take(20)} ${s.state}$min$mb\n")
+        }
+        Tidy.current?.let { sb.append("정리 중 ${Tidy.percent}% ${it.name.take(40)}\n") }
+        Uploader.current?.let { sb.append("업로드 중 ${Uploader.percent}% ${it.name.take(40)}\n") }
+        val w = Watcher.status.size
+        if (w > 0) sb.append("생방 대기 확인 ${w}명")
+        return sb.toString().take(3500)
+    }
+
     /** 녹화폰 → 원격폰 알림 (녹화 완료·업로드 완료 등) */
-    fun notifyRemote(ctx: Context, title: String, body: String) {
-        if (BuildConfig.LAB || !recordHere(ctx) || !notifyOn(ctx)) return
+    fun notifyRemote(ctx: Context, title: String, body: String, force: Boolean = false) {
+        if (BuildConfig.LAB || !recordHere(ctx) || (!notifyOn(ctx) && !force)) return
         val app = ctx.applicationContext
         Thread {
             try {

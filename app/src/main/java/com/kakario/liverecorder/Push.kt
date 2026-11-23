@@ -13,6 +13,8 @@ import com.google.firebase.messaging.RemoteMessage
  */
 object Push {
     @Volatile var ready = false; private set
+    /** 원격폰 화면이 떠 있을 때 현황을 팝업으로 보여 줄 곳 */
+    @Volatile var onStatus: ((String) -> Unit)? = null
 
     fun init(ctx: Context) {
         if (BuildConfig.LAB) return   // 실험판은 등록 안 된 앱이라 푸시 없이 (30초 확인만)
@@ -25,6 +27,7 @@ object Push {
                 .build())
             if (app == null) return
             FirebaseMessaging.getInstance().subscribeToTopic("note")
+            FirebaseMessaging.getInstance().subscribeToTopic("req")
             FirebaseMessaging.getInstance().subscribeToTopic("bm").addOnCompleteListener { t ->
                 ready = t.isSuccessful
                 if (!t.isSuccessful) RecordService.addLog("푸시 연결 실패 → 즐겨찾기는 30초마다 확인으로 맞춤 (${t.exception?.message})")
@@ -42,11 +45,21 @@ class PushService : FirebaseMessagingService() {
             val app = applicationContext
             Thread { CloudBm.sync(app) }.start()
         }
-        // 녹화폰에서 온 알림: 원격폰만 알림창에 띄우고 업로드 기록 목록에 남김
-        if (d["t"] == "note" && d["src"] != CloudBm.deviceId(this) && !CloudBm.recordHere(this) && CloudBm.notifyOn(this)) {
+        // 원격폰이 현황을 물어봄 → 녹화폰이 짧게 답함
+        if (d["t"] == "req" && CloudBm.recordHere(this)) {
+            CloudBm.notifyRemote(this, "녹화폰 현황", CloudBm.statusText(), force = true)
+        }
+        // 녹화폰에서 온 알림: 원격폰만 처리
+        if (d["t"] == "note" && d["src"] != CloudBm.deviceId(this) && !CloudBm.recordHere(this)) {
             val title = d["title"].orEmpty(); val body = d["body"].orEmpty()
-            Uploader.addNote(this, title, body)
-            showNote(title, body)
+            if (title == "녹화폰 현황") {
+                // 내가 물어본 답: 화면이 떠 있으면 팝업, 아니면 알림창 (기록 목록엔 안 남김)
+                val cb = Push.onStatus
+                if (cb != null && System.currentTimeMillis() - CloudBm.statusAskedAt < 120_000) cb(body) else showNote(title, body)
+            } else if (CloudBm.notifyOn(this)) {
+                Uploader.addNote(this, title, body)
+                showNote(title, body)
+            }
         }
     }
 
