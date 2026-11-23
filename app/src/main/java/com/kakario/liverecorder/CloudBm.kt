@@ -84,6 +84,35 @@ object CloudBm {
         return sb.toString().take(3500)
     }
 
+    /** 녹화폰: 현황을 작게 (뷰어 화면용) — 4KB 안에 들어가게 */
+    fun statusJson(): String {
+        val l = RecordService.list().filter { it.group() < 4 }.sortedWith(compareBy({ it.group() }, { it.id }))
+        val o = JSONObject().put("n", l.count { it.isDownloading }).put("r", RecordService.rateText())
+            .put("tot", l.sumOf { it.bytes } / 1024 / 1024).put("all", l.size)
+        val a = JSONArray()
+        var size = 200
+        for (s in l) {
+            val g = s.group()
+            val name = s.streamer.ifEmpty { s.host }.take(30)
+            val row = JSONArray().put(name).put(g).put(if (g == 3) "" else s.detail().take(70))
+            if (!s.pageUrl.contains("stripchat.com/$name", true)) row.put(s.pageUrl.take(80))
+            size += row.toString().toByteArray().size + 1
+            if (size > 3300) { o.put("x", "… 외 ${l.size - a.length()}개"); break }
+            a.put(row)
+        }
+        val extra = listOfNotNull(Tidy.current?.let { "정리 중 ${Tidy.percent}% ${it.name.take(40)}" }, Uploader.current?.let { "업로드 중 ${Uploader.percent}% ${it.name.take(40)}" })
+        if (extra.isNotEmpty() && !o.has("x")) o.put("x", extra.joinToString("\n"))
+        return o.put("s", a).toString()
+    }
+
+    /** 뷰어 → 녹화폰: 중지·다시 시도 */
+    fun sendCommand(ctx: Context, cmd: String, name: String) {
+        val app = ctx.applicationContext
+        Thread {
+            try { post("$RELAY_URL?notify=1", JSONObject().put("title", "명령").put("body", "$cmd|$name").put("from", deviceId(app)).toString()) } catch (_: Exception) {}
+        }.start()
+    }
+
     /** 녹화폰 → 원격폰 알림 (녹화 완료·업로드 완료 등) */
     fun notifyRemote(ctx: Context, title: String, body: String, force: Boolean = false) {
         if (BuildConfig.LAB || !recordHere(ctx) || (!notifyOn(ctx) && !force)) return

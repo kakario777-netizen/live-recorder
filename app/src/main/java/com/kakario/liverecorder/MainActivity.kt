@@ -225,6 +225,7 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         sharedUrl(intent)?.let { newTab(it) }
+        intent.getStringExtra("openUrl")?.let { u -> urlBox.setText(u); Sniff.clear(); web.loadUrl(u) }
     }
 
     private fun sharedUrl(i: Intent?): String? {
@@ -568,7 +569,7 @@ class MainActivity : Activity() {
     /** 녹화 현황: 칸마다 상태와 중지 버튼, 아래에 '이 방송 추가' */
     private fun showSlots() {
         // 뷰어 모드: 이 폰은 녹화를 안 하니 '녹화 현황'은 녹화폰 현황으로
-        if (CloudBm.viewer(this)) { askRecorderStatus(); return }
+        if (CloudBm.viewer(this)) { startActivity(Intent(this, RemoteStatusActivity::class.java)); return }
         startActivityForResult(Intent(this, StatusActivity::class.java), StatusActivity.REQ)
     }
 
@@ -789,7 +790,7 @@ class MainActivity : Activity() {
                         Toast.makeText(this, if (on) "처음 채팅 15줄쯤 보고 한국어가 있을 때만 채팅을 저장해요" else "모든 방송의 채팅을 저장해요", Toast.LENGTH_LONG).show()
                     }
                     7 -> showCloudBm()
-                    8 -> askRecorderStatus()
+                    8 -> if (CloudBm.recordHere(this)) askRecorderStatus() else startActivity(Intent(this, RemoteStatusActivity::class.java))
                     9 -> showLab()
                 }
             }

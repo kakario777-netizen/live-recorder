@@ -48,7 +48,7 @@ class PushService : FirebaseMessagingService() {
         }
         // 원격폰이 현황을 물어봄 → 녹화폰이 짧게 답함
         if (d["t"] == "req" && CloudBm.recordHere(this)) {
-            val st = CloudBm.statusText()
+            val st = CloudBm.statusJson()
             val same = st == lastSent && System.currentTimeMillis() - lastSentAt < 10 * 60_000L
             if (!same) { lastSent = st; lastSentAt = System.currentTimeMillis() }
             CloudBm.notifyRemote(this, "녹화폰 현황", if (same) "=" else st, force = true)   // 바뀐 게 없으면 '=' 한 글자만
@@ -63,6 +63,18 @@ class PushService : FirebaseMessagingService() {
                 RecordService.addLog("원격폰 요청으로 녹화 추가: ${name.ifEmpty { url }}")
                 CloudBm.notifyRemote(this, "녹화 요청 받음", name.ifEmpty { url }, force = true)
             }
+        }
+        // 뷰어가 보낸 명령(중지·다시 시도) → 녹화폰이 실행하고 새 현황을 답함
+        if (d["t"] == "note" && d["src"] != CloudBm.deviceId(this) && CloudBm.recordHere(this) && d["title"] == "명령") {
+            val (cmd, name) = d["body"].orEmpty().split('|', limit = 2).let { (it.getOrNull(0) ?: "") to (it.getOrNull(1) ?: "") }
+            val sl = RecordService.list().firstOrNull { it.streamer.equals(name, true) || it.host == name }
+            if (sl != null) {
+                when (cmd) {
+                    "stop" -> { RecordService.stopOne(this, sl.id); RecordService.addLog("원격폰 요청으로 중지: $name") }
+                    "retry" -> { sl.retryNow(); RecordService.addLog("원격폰 요청으로 다시 시도: $name") }
+                }
+            }
+            Thread { Thread.sleep(1500); val st = CloudBm.statusJson(); lastSent = st; lastSentAt = System.currentTimeMillis(); CloudBm.notifyRemote(this, "녹화폰 현황", st, force = true) }.start()
         }
         // 녹화폰에서 온 알림: 원격폰만 처리
         if (d["t"] == "note" && d["src"] != CloudBm.deviceId(this) && !CloudBm.recordHere(this)) {
