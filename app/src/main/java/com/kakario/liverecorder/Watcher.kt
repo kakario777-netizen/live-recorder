@@ -30,7 +30,7 @@ object Watcher {
     private fun key(url: String) = url.trimEnd('/').lowercase()
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("watch", Context.MODE_PRIVATE)
 
-    fun watched(ctx: Context) = if (!CloudBm.recordHere(ctx)) emptyList() else Bookmarks.list(ctx).filter { it.watch }
+    fun watched(ctx: Context) = Bookmarks.list(ctx).filter { it.watch }
     fun any(ctx: Context) = watched(ctx).isNotEmpty()
     fun isWatched(ctx: Context, url: String) = watched(ctx).any { key(it.url) == key(url) }
 

@@ -1039,7 +1039,7 @@ class MainActivity : Activity() {
             textSize = 13f
             text = "즐겨찾기는 메인 구글 계정 드라이브에 저장되고, 한 폰에서 바꾸면 다른 폰이 바로 받아요.\n\n" +
                 "녹화폰: 생방 대기 녹화를 하고, 녹화·업로드가 끝나면 원격폰에 알림을 보내요. 다른 폰에서 추가한 즐겨찾기는 자동으로 생방 대기가 돼요.\n" +
-                "원격폰: 녹화는 안 하고 즐겨찾기만 관리해요. 녹화폰의 알림을 받아 알림창과 업로드 기록에 남겨요.\n\n" +
+                "원격폰: 즐겨찾기는 같이 맞추지만 녹화는 이 폰에서 따로 해요(생방 대기 표시도 폰마다 따로). 녹화폰의 알림을 받아 알림창과 업로드 기록에 남기고, 이 폰은 알림을 보내지 않아요.\n\n" +
                 "맞추기 상태: " + CloudBm.lastResult.ifEmpty { "준비 중" } + (if (Push.ready) " · 푸시 연결됨" else " · 푸시 연결 전")
         })
         val group = android.widget.RadioGroup(this)
@@ -1057,8 +1057,8 @@ class MainActivity : Activity() {
                 val rec = group.checkedRadioButtonId == rRec.id
                 CloudBm.setRecordHere(ctx, rec)
                 CloudBm.setNotifyOn(ctx, nt.isChecked)
-                if (rec && Watcher.any(ctx)) RecordService.startWatch(ctx)
-                Toast.makeText(ctx, if (rec) "이 폰은 녹화폰이에요" else "이 폰은 원격폰이에요 (생방 대기 녹화 안 함)", Toast.LENGTH_SHORT).show()
+                if (Watcher.any(ctx)) RecordService.startWatch(ctx)
+                Toast.makeText(ctx, if (rec) "이 폰은 녹화폰이에요" else "이 폰은 원격폰이에요 (녹화는 따로, 알림은 받기만)", Toast.LENGTH_SHORT).show()
                 Thread { CloudBm.sync(applicationContext) }.start()
             }
             .setNeutralButton("지금 맞추기") { _, _ ->

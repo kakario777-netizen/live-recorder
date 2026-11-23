@@ -111,8 +111,11 @@ object CloudBm {
             val remote = r.optString("data").takeIf { it.startsWith("{") }?.let { JSONObject(it) }
             val remoteB = remote?.optJSONArray("b")?.let { runCatching { Bookmarks.fromJson(it) }.getOrNull() } ?: emptyList()
             val remoteC = remote?.optJSONArray("c")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
-            var merged = if (r.optBoolean("same")) local else Bookmarks.merge(local, remoteB)
-            // 다른 폰에서 새로 들어온 즐겨찾기는 녹화 맡은 폰에서 바로 '생방 대기'로
+            // 생방 대기(자동 녹화) 표시는 폰마다 따로: 받은 목록의 표시는 버리고 이 폰 것을 유지
+            val myWatch = local.filter { it.watch }.map { it.url }.toSet()
+            var merged = (if (r.optBoolean("same")) local else Bookmarks.merge(local, remoteB))
+                .map { if (it.watch == (it.url in myWatch)) it else Bookmarks.Item(it.name, it.url, it.t, it.del, it.cat, it.url in myWatch) }
+            // 다른 폰에서 새로 들어온 즐겨찾기는 녹화폰에서 바로 '생방 대기'로 (원격폰은 따로 녹화하므로 그대로)
             val had = local.map { it.url }.toSet()
             val fresh = merged.filter { !it.del && !it.watch && it.url !in had }.map { it.url }.toSet()
             if (fresh.isNotEmpty() && recordHere(ctx)) {
@@ -123,7 +126,7 @@ object CloudBm {
             val cats = (Bookmarks.cats(ctx) + remoteC).distinct()
             Bookmarks.saveAll(ctx, merged)
             Bookmarks.setCats(ctx, cats)
-            val out = JSONObject().put("b", Bookmarks.toJson(merged)).put("c", JSONArray(cats)).toString()
+            val out = JSONObject().put("b", Bookmarks.toJson(merged.map { Bookmarks.Item(it.name, it.url, it.t, it.del, it.cat, false) })).put("c", JSONArray(cats)).toString()
             var newVer = remoteVer
             if (dirty || remote == null || out != remote.toString()) {
                 newVer = post(base, out).optLong("ver", remoteVer)
