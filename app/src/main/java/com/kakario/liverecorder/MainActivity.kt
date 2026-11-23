@@ -755,6 +755,7 @@ class MainActivity : Activity() {
             "① 방송 대기 확인 시험 (등록·즐겨찾기 전부)",
             "② 직접 받기 시험 (녹화 중인 방송, 90초)",
             "③ 결과 복사 (붙여넣어 보내 주세요)",
+            "진행 상황 보기",
             "결과 지우고 처음부터")
         AlertDialog.Builder(this).setTitle("실험실")
             .setItems(items) { _, i ->
@@ -765,28 +766,52 @@ class MainActivity : Activity() {
                         RecordService.list().forEach { sl -> Names.streamerFromUrl(sl.pageUrl).takeIf { it.isNotEmpty() }?.let { names.add(it); host = sl.host } }
                         Bookmarks.list(this).forEach { b -> if (b.url.contains("stripchat")) Names.streamerFromUrl(b.url).takeIf { it.isNotEmpty() }?.let { names.add(it) } }
                         Toast.makeText(this, "${names.size}명 확인 시작… 끝나면 알려 드려요", Toast.LENGTH_SHORT).show()
-                        Lab.checkerTest(this, host, names.toList(), web.settings.userAgentString) {
-                            Toast.makeText(this, "① 끝났어요. ③ 결과 복사를 눌러 주세요", Toast.LENGTH_LONG).show()
-                        }
+                        Lab.checkerTest(this, host, names.toList(), web.settings.userAgentString) {}
+                        showLabProgress()
                     }
                     1 -> {
                         val ids = Lab.probes.values.filter { it.playlists.isNotEmpty() }.map { it.slotId }.take(3)
                         if (ids.isEmpty()) { Toast.makeText(this, "녹화 중인 방송이 1분 이상 받아진 뒤 다시 눌러 주세요", Toast.LENGTH_LONG).show(); return@setItems }
                         var left = ids.size
                         Toast.makeText(this, "${ids.size}개 방송 직접 받기 90초 시험 시작", Toast.LENGTH_SHORT).show()
-                        ids.forEach { id -> Lab.directTest(this, id, 90) {
-                            left--
-                            if (left == 0) Toast.makeText(this, "② 끝났어요. ③ 결과 복사를 눌러 주세요", Toast.LENGTH_LONG).show()
-                        } }
+                        ids.forEach { id -> Lab.directTest(this, id, 90) { left-- } }
+                        showLabProgress()
                     }
                     2 -> {
                         val path = Lab.export(this)
                         Toast.makeText(this, "복사했어요. 채팅에 붙여넣어 주세요\n(파일: $path)", Toast.LENGTH_LONG).show()
                     }
-                    3 -> { Lab.clear(); Toast.makeText(this, "지웠어요", Toast.LENGTH_SHORT).show() }
+                    3 -> showLabProgress()
+                    4 -> { Lab.clear(); Toast.makeText(this, "지웠어요", Toast.LENGTH_SHORT).show() }
                 }
             }
             .setNegativeButton("닫기", null).show()
+    }
+
+    /** 실험 진행 상황: 1초마다 새로 고침 (진행 중 / 끝, 최근 기록) */
+    private fun showLabProgress() {
+        val tv = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#222222")); setPadding(dp(16), dp(8), dp(16), dp(8)); setTextIsSelectable(true) }
+        val sv = ScrollView(this).apply { addView(tv) }
+        val h = android.os.Handler(android.os.Looper.getMainLooper())
+        var dlg: AlertDialog? = null
+        val tick = object : Runnable {
+            override fun run() {
+                val head = if (Lab.progress.isEmpty()) "아직 시작한 시험이 없어요" else Lab.progress.entries.joinToString("\n") { "${it.key}: ${it.value}" }
+                val state = if (Lab.running > 0) "진행 중이에요… (이 창은 닫아도 계속 돼요)" else if (Lab.progress.isNotEmpty()) "모두 끝났어요. 아래 '결과 복사'를 눌러 주세요" else ""
+                val atBottom = !sv.canScrollVertically(1)
+                tv.text = "$state\n\n$head\n\n— 최근 기록 —\n" + Lab.recent(40) + "\n\n" + Lab.memText(this@MainActivity)
+                if (atBottom) sv.post { sv.fullScroll(android.view.View.FOCUS_DOWN) }
+                dlg?.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = Lab.running == 0
+                if (dlg?.isShowing == true) h.postDelayed(this, 1000)
+            }
+        }
+        dlg = AlertDialog.Builder(this).setTitle("실험 진행 상황").setView(sv)
+            .setPositiveButton("결과 복사") { _, _ ->
+                val path = Lab.export(this)
+                Toast.makeText(this, "복사했어요. 채팅에 붙여넣어 주세요\n(파일: $path)", Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("닫기", null).show()
+        tick.run()
     }
 
     /** 설정 › 다운 화질: 사이트마다 최대 화질(1080p / 720p / 480p) 고르기 */

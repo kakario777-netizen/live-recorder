@@ -29,12 +29,20 @@ object Lab {
     private val main = Handler(Looper.getMainLooper())
     private val fmt = SimpleDateFormat("HH:mm:ss", Locale.KOREA)
 
+    // ---------- 진행 상황 (화면에 보여 주기용) ----------
+    val progress = java.util.concurrent.ConcurrentHashMap<String, String>()
+    @Volatile var running = 0
+    @Synchronized fun recent(n: Int): String {
+        val all = sections.values.flatMap { it.lines().filter { l -> l.isNotBlank() } }
+        return all.takeLast(n).joinToString("\n")
+    }
+
     // ---------- 보고서 ----------
     private val sections = java.util.LinkedHashMap<String, StringBuilder>()
     @Synchronized fun add(section: String, line: String) {
         sections.getOrPut(section) { StringBuilder() }.append("[").append(fmt.format(Date())).append("] ").append(line).append('\n')
     }
-    @Synchronized fun clear() { sections.clear(); probes.clear() }
+    @Synchronized fun clear() { sections.clear(); probes.clear(); progress.clear() }
 
     @Synchronized fun report(ctx: Context): String {
         val sb = StringBuilder()
@@ -194,9 +202,12 @@ object Lab {
         val p = probes[slotId]
         val sec = "직접 받기 시험 ${slotId}번 ${p?.name ?: ""}"
         val plUrl0 = p?.playlists?.lastOrNull()?.first
-        if (p == null || plUrl0 == null) { add(sec, "방송 목록 원본이 아직 없음 (녹화 중인 방송에서 1분쯤 받은 뒤 다시)"); done(); return }
+        if (p == null || plUrl0 == null) { add(sec, "방송 목록 원본이 아직 없음 (녹화 중인 방송에서 1분쯤 받은 뒤 다시)"); progress["② 직접 받기 ${slotId}번"] = "못 함 · 원본 없음"; done(); return }
         val headers = p.playlistHeaders.split(" | ").mapNotNull { val i = it.indexOf(": "); if (i > 0) it.substring(0, i) to it.substring(i + 2) else null }
             .filter { it.first.lowercase() in setOf("origin", "referer", "user-agent", "accept", "accept-language") }.toMap()
+        val pk = "② 직접 받기 ${slotId}번 ${p.name}"
+        running++
+        progress[pk] = "시작 중…"
         Thread {
             val plUrl = plUrl0.replace(Regex("""[?&]_HLS_(msn|part|skip)=[^&]*"""), "").let { if (!it.contains('?') && it.contains('&')) it.replaceFirst('&', '?') else it }
             add(sec, "시작: ${seconds}초 · 목록 주소 $plUrl")
@@ -214,6 +225,7 @@ object Lab {
             try {
                 while (System.currentTimeMillis() - t0 < seconds * 1000L) {
                     polls++
+                    progress[pk] = "${(System.currentTimeMillis() - t0) / 1000}/${seconds}초 · 조각 ${segOk}개 · ${bytes / 1024}KB · 응답 $codes"
                     val r = try { get(plUrl, headers) } catch (e: Exception) { null }
                     if (r == null || r.code !in 200..299) { listFail++; if (listFail <= 3) add(sec, "목록 받기 실패: ${r?.code ?: "연결 오류"}"); Thread.sleep(1000); continue }
                     val text = String(r.body)
@@ -265,6 +277,8 @@ object Lab {
             add(sec, "자원: 앱 전체 CPU ${cpuMs}ms / ${"%.0f".format(secs)}초 (다른 녹화 포함) · " + memText(ctx))
             add(sec, "저장: ${out.name} (" + (if (segOk > 0) "동영상 앱으로 열어 재생되는지 확인해 주세요" else "받은 게 없음") + ")")
             Saver.scan(ctx, out.absolutePath)
+            progress[pk] = "끝 · 조각 ${segOk}개 · ${bytes / 1024}KB" + (if (segOk == 0) " (실패)" else "")
+            running--
             main.post(done)
         }.start()
     }
@@ -301,6 +315,8 @@ object Lab {
         val sec = "방송 대기 확인 시험 (${names.size}명)"
         if (names.isEmpty()) { add(sec, "확인할 스트리머가 없음 (녹화 등록이나 즐겨찾기를 먼저)"); done(); return }
         add(sec, "시작: 창 하나(https://$host/robots.txt)에서 차례로 물어봄")
+        running++
+        progress["① 방송 대기 확인"] = "창 여는 중… (0/${names.size})"
         // 비교: 앱이 페이지 없이 바로 물어볼 때
         Thread {
             for (n in names.take(3)) {
@@ -322,6 +338,7 @@ object Lab {
             w.addJavascriptInterface(object {
                 @JavascriptInterface fun res(n: String, code: Int, ms: Int, t: String) {
                     count++
+                    progress["① 방송 대기 확인"] = "확인 중 $count/${names.size}명"
                     val st = Regex("\"status\"\\s*:\\s*\"(\\w+)\"").find(t)?.groupValues?.get(1)
                     val live = Regex("\"isLive\"\\s*:\\s*(true|false)").find(t)?.groupValues?.get(1)
                     add(sec, "$n → 응답 $code · ${ms}ms · status=${st ?: "-"} · isLive=${live ?: "-"}" + (if (count <= 3) "\n   원본: " + t.take(600).replace('\n', ' ') else ""))
@@ -329,6 +346,8 @@ object Lab {
                 @JavascriptInterface fun done(total: Int) {
                     val s = (System.currentTimeMillis() - t0) / 1000.0
                     add(sec, "끝: ${total}명 확인에 ${"%.1f".format(s)}초 (한 명당 ${"%.0f".format(s * 1000 / total.coerceAtLeast(1))}ms) · " + memText(ctx))
+                    progress["① 방송 대기 확인"] = "끝 · ${total}명 ${"%.1f".format(s)}초"
+                    running--
                     main.post { checker?.destroy(); checker = null; done() }
                 }
             }, "LRLab")
@@ -346,6 +365,14 @@ object Lab {
                 }
             }
             w.loadUrl("https://$host/robots.txt")
+            main.postDelayed({
+                if (checker === w && progress["① 방송 대기 확인"]?.startsWith("끝") != true && count == 0) {
+                    add(sec, "60초 동안 응답 없음 → 중단 (창이 안 열렸거나 사이트가 막음)")
+                    progress["① 방송 대기 확인"] = "끝 · 응답 없음(실패)"
+                    running--
+                    checker?.destroy(); checker = null; done()
+                }
+            }, 60_000)
         }
     }
 }
