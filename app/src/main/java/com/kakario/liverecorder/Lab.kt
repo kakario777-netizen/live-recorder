@@ -33,10 +33,18 @@ object Lab {
     val wsUrl = ConcurrentHashMap<Int, String>()
     val wsSent = ConcurrentHashMap<Int, MutableList<String>>()
     val pageChans = ConcurrentHashMap<String, Int>()
+    private val lastWsUrl = ConcurrentHashMap<Int, String>()
+    @Volatile var spConnect: String? = null
+    @Volatile var spUrl = "wss://websocket-sp-v6.stripchat.com/connection/websocket"
     fun onWs(slotId: Int, kind: String, text: String) {
         if (kind == "받음") Regex("\"push\":\\{\"channel\":\"([^\"]+)\"").findAll(text).forEach { m ->
             val ch = m.groupValues[1].replace(Regex("[0-9]+"), "N")
             if (pageChans.merge(ch, 1, Int::plus) == 1) add("페이지 채팅 연결에서 받은 채널 (처음 본 것)", ch + " · 예: " + text.substringAfter(m.value).take(300))
+        }
+        if (kind == "연결") lastWsUrl[slotId] = text.substringBefore(" | ")
+        // 채팅 서버(websocket-sp)로 보낸 입장권만 따로 기억
+        if (kind == "보냄" && lastWsUrl[slotId]?.contains("websocket-sp") == true) {
+            text.lines().firstOrNull { it.contains("\"connect\"") && it.contains("token") }?.let { spConnect = it; spUrl = lastWsUrl[slotId]!! }
         }
         when (kind) {
             "연결" -> { wsUrl[slotId] = text.substringBefore(" | "); wsSent.remove(slotId) }
@@ -368,8 +376,9 @@ object Lab {
         Thread {
             // 1) 자동 녹화 켠 스트리머 전부: 방송 중(200) / 꺼짐(404)
             val live = ArrayList<Triple<String, String, String>>()   // 이름, 주소, master 내용
-            val list = Watcher.watched(ctx).filter { it.url.contains("stripchat") }
-            add(sec, "자동 녹화 켠 스트리머 ${list.size}명 확인 (번호 모르는 사람은 건너뜀)")
+            val rec = RecordService.list().map { Bookmarks.Item(it.streamer.ifEmpty { Names.streamerFromUrl(it.pageUrl) }, it.pageUrl) }
+            val list = (Watcher.watched(ctx) + rec).filter { it.url.contains("stripchat") }.distinctBy { it.url.trimEnd('/').lowercase() }
+            add(sec, "자동 녹화 켠 스트리머 + 녹화 중인 방송 ${list.size}명 확인 (번호 모르는 사람은 건너뜀)")
             var on = 0; var off = 0; var unknown = 0
             val t0 = System.currentTimeMillis()
             for (b in list) {
@@ -440,12 +449,16 @@ object Lab {
     /** 앱이 직접 채팅 연결: 페이지가 보낸 것을 똑같이 보내고, 받은 것 중 채팅만 골라 셈 */
     fun chatTest(ctx: Context, seconds: Int, done: () -> Unit) {
         val sec = "채팅 직접 받기 시험"
-        val sid = wsSent.keys.firstOrNull { wsUrl[it] != null && (wsSent[it]?.size ?: 0) > 0 }
-        if (sid == null) { add(sec, "채팅 원본이 없음 → 재생기로 녹화 중인 방송이 1개 이상 있어야 해요"); done(); return }
-        val url = wsUrl[sid]!!
-        val frames = wsSent[sid]!!.toList()
+        val conn = spConnect
+        if (conn == null) { add(sec, "채팅 입장권이 아직 없음 → 재생기로 녹화 중인 방송이 1개 이상 있어야 해요"); done(); return }
+        val url = spUrl
+        // 지금 녹화 중이거나 자동 녹화 중인 방송들의 채팅 채널
+        val ids = (RecordService.list().map { it.pageUrl } + Watcher.watched(ctx).map { it.url })
+            .mapNotNull { Watcher.idOf(ctx, it) }.distinct().take(10)
+        if (ids.isEmpty()) { add(sec, "채팅을 받을 스트리머 번호가 없음"); done(); return }
+        val frames = listOf(conn) + ids.mapIndexed { i, id -> "{\"subscribe\":{\"channel\":\"newChatMessage@$id\"},\"id\":${i + 2}}" }
         progress["채팅"] = "연결 중…"
-        add(sec, "${sid}번 페이지가 보낸 ${frames.size}개를 그대로 보내 봄 · $url")
+        add(sec, "앱이 직접 연결: 입장권 + 채팅 채널 ${ids.size}개 (newChatMessage@번호) · $url")
         val client = okhttp3.OkHttpClient.Builder().build()   // 사이트 방식 핑("{}")만 씀
         val req = okhttp3.Request.Builder().url(url).header("Origin", "https://ko.stripchat.com").header("User-Agent", UA).build()
         val chans = ConcurrentHashMap<String, Int>()
