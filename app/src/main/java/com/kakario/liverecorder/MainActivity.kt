@@ -783,7 +783,7 @@ class MainActivity : Activity() {
     /** 실험판: 숨은 재생기 없이 가볍게 받기 시험 */
     private fun showLab() {
         val items = arrayOf(
-            "① 방송 대기 확인 시험 (방송 서버로 직접)",
+            "★ 한 번에 시험 (2분): 방송 확인 + 재생기 없이 녹화 + 채팅 직접",
             "② 직접 받기 시험 (녹화 중인 방송, 90초)",
             "③ 결과 복사 (붙여넣어 보내 주세요)",
             "진행 상황 보기",
@@ -792,6 +792,10 @@ class MainActivity : Activity() {
             .setItems(items) { _, i ->
                 when (i) {
                     0 -> {
+                        Lab.allInOne(this, 120) {}
+                        showLabProgress()
+                    }
+                    99 -> {
                         val names = LinkedHashSet<String>()
                         var host = "ko.stripchat.com"
                         RecordService.list().forEach { sl -> Names.streamerFromUrl(sl.pageUrl).takeIf { it.isNotEmpty() }?.let { names.add(it); host = sl.host } }

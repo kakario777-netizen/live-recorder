@@ -56,4 +56,6 @@ dependencies {
     implementation("androidx.webkit:webkit:1.12.1")
     // NAS(FTP) 자동 업로드
     implementation("commons-net:commons-net:3.11.1")
+    // 채팅 직접 받기(웹소켓)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

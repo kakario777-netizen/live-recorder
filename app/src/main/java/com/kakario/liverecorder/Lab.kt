@@ -27,6 +27,17 @@ import java.util.concurrent.ConcurrentHashMap
 object Lab {
     val on get() = BuildConfig.LAB
     private val main = Handler(Looper.getMainLooper())
+    @Volatile var appCtx: Context? = null
+
+    // 채팅 연결: 페이지가 보낸 것(입장권·구독)을 통째로 기억 → 앱이 똑같이 보내서 직접 받기 시험
+    val wsUrl = ConcurrentHashMap<Int, String>()
+    val wsSent = ConcurrentHashMap<Int, MutableList<String>>()
+    fun onWs(slotId: Int, kind: String, text: String) {
+        when (kind) {
+            "연결" -> { wsUrl[slotId] = text.substringBefore(" | "); wsSent.remove(slotId) }
+            "보냄" -> wsSent.getOrPut(slotId) { java.util.Collections.synchronizedList(ArrayList()) }.let { if (it.size < 300) it.add(text) }
+        }
+    }
     private val fmt = SimpleDateFormat("HH:mm:ss", Locale.KOREA)
 
     // ---------- 진행 상황 (화면에 보여 주기용) ----------
@@ -160,7 +171,21 @@ object Lab {
     private fun printable(b: ByteArray) = b.isNotEmpty() && b.all { it in 0x20..0x7e }
 
     /** pkey별로 알아낸 풀이 열쇠(16바이트) */
-    val keys = ConcurrentHashMap<String, ByteArray>()
+    val keys = ConcurrentHashMap<String, ByteArray>().apply {
+        // 지금까지 확인된 열쇠 (사이트가 바꾸면 재생기로 다시 배움)
+        put("NTK9aqcLmNFMWrpQ", "1838c78f543606e6de5fc81167f36e5a".chunked(2).map { it.toInt(16).toByte() }.toByteArray())
+    }
+    fun loadKeys(ctx: Context) {
+        try {
+            val o = org.json.JSONObject(ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getString("mfKeys", "{}") ?: "{}")
+            o.keys().forEach { k -> keys[k] = o.getString(k).chunked(2).map { it.toInt(16).toByte() }.toByteArray() }
+        } catch (_: Exception) {}
+    }
+    fun saveKeys(ctx: Context) {
+        val o = org.json.JSONObject()
+        keys.forEach { (k, v) -> o.put(k, v.joinToString("") { "%02x".format(it) }) }
+        ctx.getSharedPreferences("main", Context.MODE_PRIVATE).edit().putString("mfKeys", o.toString()).apply()
+    }
     private val segRe = Regex("""_(\d+)_([A-Za-z0-9+/=]{16,})_(\d+)(_part\d+)?\.mp4""")
     private val plainRe = Regex("""_(\d+)_([A-Za-z0-9]{16})_(\d+)(_part\d+)?\.mp4""")
 
@@ -203,6 +228,7 @@ object Lab {
         }
         if (found != null && agree >= 2 && agree == tried) {
             keys[pkey] = found
+            appCtx?.let { saveKeys(it) }
             sb.append("풀이 열쇠 찾음 (pkey $pkey): ").append(found.joinToString("") { "%02x".format(it) }).append(" · ${agree}개 모두 일치\n")
         } else sb.append("풀이 열쇠 아직: 짝 ${tried}개 중 일치 $agree\n")
         synchronized(p) { p.decodeNote = sb.toString() }
@@ -220,14 +246,18 @@ object Lab {
         if (p == null || plUrl0 == null) { add(sec, "방송 목록 원본이 아직 없음 (녹화 중인 방송에서 1분쯤 받은 뒤 다시)"); progress["② 직접 받기 ${slotId}번"] = "못 함 · 원본 없음"; done(); return }
         val headers = p.playlistHeaders.split(" | ").mapNotNull { val i = it.indexOf(": "); if (i > 0) it.substring(0, i) to it.substring(i + 2) else null }
             .filter { it.first.lowercase() in setOf("origin", "referer", "user-agent", "accept", "accept-language") }.toMap()
-        val pk = "② 직접 받기 ${slotId}번 ${p.name}"
+        directRun(ctx, sec, "② 직접 받기 ${slotId}번 ${p.name}", p.name, plUrl0, headers, seconds, done)
+    }
+
+    /** 재생기 없이 방송 목록 주소 하나로 직접 받기 (시험용 공통) */
+    fun directRun(ctx: Context, sec: String, pk: String, name: String, plUrl0: String, headers: Map<String, String>, seconds: Int, done: () -> Unit) {
         running++
         progress[pk] = "시작 중…"
         Thread {
             val plUrl = plUrl0.replace(Regex("""[?&]_HLS_(msn|part|skip)=[^&]*"""), "").let { if (!it.contains('?') && it.contains('&')) it.replaceFirst('&', '?') else it }
             add(sec, "시작: ${seconds}초 · 목록 주소 $plUrl")
             val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), Saver.DIR).apply { mkdirs() }
-            val out = File(dir, "직접받기 시험 ${p.name} " + SimpleDateFormat("HHmmss", Locale.KOREA).format(Date()) + ".mp4")
+            val out = File(dir, "직접받기 시험 $name " + SimpleDateFormat("HHmmss", Locale.KOREA).format(Date()) + ".mp4")
             val fos = out.outputStream().buffered(256 * 1024)
             val seen = HashSet<String>()
             val codes = HashMap<String, Int>()
@@ -317,6 +347,135 @@ object Lab {
             i += size; n++
         }
         return sb.toString().ifEmpty { "알 수 없음" }
+    }
+
+    // ---------- 한 번에 시험: 방송 서버 확인 + 재생기 없이 녹화 + 채팅 직접 받기 ----------
+    private val UA = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36"
+    private val CDN_H = mapOf("Origin" to "https://ko.stripchat.com", "Referer" to "https://ko.stripchat.com/", "Accept" to "*/*", "User-Agent" to UA)
+
+    fun allInOne(ctx: Context, seconds: Int, done: () -> Unit) {
+        appCtx = ctx.applicationContext
+        loadKeys(ctx)
+        val sec = "한 번에 시험"
+        running++
+        progress["전체 시험"] = "방송 서버에 물어보는 중…"
+        Thread {
+            // 1) 자동 녹화 켠 스트리머 전부: 방송 중(200) / 꺼짐(404)
+            val live = ArrayList<Triple<String, String, String>>()   // 이름, 주소, master 내용
+            val list = Watcher.watched(ctx).filter { it.url.contains("stripchat") }
+            add(sec, "자동 녹화 켠 스트리머 ${list.size}명 확인 (번호 모르는 사람은 건너뜀)")
+            var on = 0; var off = 0; var unknown = 0
+            val t0 = System.currentTimeMillis()
+            for (b in list) {
+                val id = Watcher.idOf(ctx, b.url)
+                if (id == null) { unknown++; add(sec, "${b.name}: 번호 모름"); continue }
+                val u = "https://edge-hls.doppiocdn.org/hls/$id/master/${id}_auto.m3u8?playlistType=lowLatency"
+                val r = try { get(u, CDN_H) } catch (e: Exception) { null }
+                val body = r?.body?.let { String(it) } ?: ""
+                val vs = Regex("""NAME="([^"]+)"""").findAll(body).map { it.groupValues[1] }.toList()
+                add(sec, "${b.name} ($id) → ${r?.code ?: "오류"} " + (if (vs.isNotEmpty()) "방송 중 · 화질 ${vs.joinToString(",")}" + (if (body.contains("blurred")) " · 흐린 화면 있음" else "") else "꺼짐"))
+                if (r != null && r.code in 200..299 && vs.isNotEmpty()) { on++; live.add(Triple(b.name, u, body)) } else off++
+                Thread.sleep(150)
+            }
+            add(sec, "결과: 방송 중 $on · 꺼짐 $off · 번호 모름 $unknown · ${System.currentTimeMillis() - t0}ms")
+            // 2) 방송 중인 사람 최대 4명: 재생기 없이 master → 화질 고르기 → 직접 받기
+            val pick = live.take(4)
+            if (pick.isEmpty()) add(sec, "방송 중인 자동 녹화 스트리머가 없어서 직접 녹화 시험은 건너뜀")
+            var left = pick.size + 1
+            val fin = { left--; if (left == 0) { progress["전체 시험"] = "끝"; running--; main.post(done) } }
+            for ((name, mu, body) in pick) {
+                val target = Quality.forUrl(ctx, "https://ko.stripchat.com/$name")
+                val v = chooseVariant(body, target)
+                if (v == null) { add(sec, "$name: 화질 목록을 못 읽음"); fin(); continue }
+                val pk = body.lines().filter { it.startsWith("#EXT-X-MOUFLON:PSCH:") }.map { it.substringAfterLast(':').trim() }.firstOrNull { keys.containsKey(it) }
+                if (pk == null) { add(sec, "$name: 아는 열쇠가 없음 (재생기로 1분 녹화하면 배움)"); fin(); continue }
+                val pl = v.second + (if (v.second.contains('?')) "&" else "?") + "psch=v2&pkey=$pk"
+                add(sec, "$name: ${v.first} 고름 (목표 ${Quality.label(target)}) · 열쇠 $pk")
+                directRun(ctx, "재생기 없이 녹화 시험 $name", "녹화 $name", name, pl, CDN_H, seconds) { fin() }
+            }
+            // 3) 채팅 직접 받기 (페이지가 보낸 입장권·구독을 그대로)
+            chatTest(ctx, seconds) { fin() }
+        }.start()
+    }
+
+    /** master에서 목표 화질 이하 중 가장 좋은 것 (최고 화질이면 제일 큰 것) */
+    private fun chooseVariant(master: String, target: Int): Pair<String, String>? {
+        val ls = master.lines()
+        val vs = ArrayList<Triple<Int, String, String>>()
+        for (i in ls.indices) if (ls[i].startsWith("#EXT-X-STREAM-INF")) {
+            val h = Regex("""RESOLUTION=\d+x(\d+)""").find(ls[i])?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val n = Regex("""NAME="([^"]+)"""").find(ls[i])?.groupValues?.get(1) ?: "${h}p"
+            val u = ls.getOrNull(i + 1)?.trim() ?: continue
+            if (!n.contains("blurred", true)) vs.add(Triple(h, n, u))
+        }
+        if (vs.isEmpty()) return null
+        val ok = vs.filter { it.first <= target }.maxByOrNull { it.first } ?: vs.minByOrNull { it.first }!!
+        return ok.second to ok.third
+    }
+
+    /** 앱이 직접 채팅 연결: 페이지가 보낸 것을 똑같이 보내고, 받은 것 중 채팅만 골라 셈 */
+    fun chatTest(ctx: Context, seconds: Int, done: () -> Unit) {
+        val sec = "채팅 직접 받기 시험"
+        val sid = wsSent.keys.firstOrNull { wsUrl[it] != null && (wsSent[it]?.size ?: 0) > 0 }
+        if (sid == null) { add(sec, "채팅 원본이 없음 → 재생기로 녹화 중인 방송이 1개 이상 있어야 해요"); done(); return }
+        val url = wsUrl[sid]!!
+        val frames = wsSent[sid]!!.toList()
+        progress["채팅"] = "연결 중…"
+        add(sec, "${sid}번 페이지가 보낸 ${frames.size}개를 그대로 보내 봄 · $url")
+        val client = okhttp3.OkHttpClient.Builder().pingInterval(20, java.util.concurrent.TimeUnit.SECONDS).build()
+        val req = okhttp3.Request.Builder().url(url).header("Origin", "https://ko.stripchat.com").header("User-Agent", UA).build()
+        val chans = ConcurrentHashMap<String, Int>()
+        var msgs = 0; var kor = 0; var samples = 0
+        val hangul = Regex("[\\uAC00-\\uD7A3]")
+        val t0 = System.currentTimeMillis()
+        val ws = client.newWebSocket(req, object : okhttp3.WebSocketListener() {
+            override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
+                add(sec, "연결됨 (${response.code})"); frames.forEach { webSocket.send(it) }
+            }
+            override fun onMessage(webSocket: okhttp3.WebSocket, text: String) {
+                if (text == "{}") { webSocket.send("{}"); return }
+                for (line in text.split('\n')) {
+                    if (line.isBlank()) continue
+                    val o = try { org.json.JSONObject(line) } catch (e: Exception) { continue }
+                    val push = o.optJSONObject("push") ?: continue
+                    val ch = push.optString("channel")
+                    chans.merge(ch.substringBefore('@').substringBefore('#'), 1, Int::plus)
+                    val data = push.optJSONObject("pub")?.optJSONObject("data") ?: continue
+                    val chat = pickChat(data)
+                    if (chat != null) {
+                        msgs++; if (hangul.containsMatchIn(chat)) kor++
+                        if (samples < 20) { samples++; add(sec, "채팅 [$ch] " + chat.replace('\n', ':').take(150)) }
+                        if (samples == 1) add(sec, "채팅 원본 예: " + line.take(800))
+                    }
+                    progress["채팅"] = "받는 중 · 채팅 ${msgs}줄 (한국어 $kor)"
+                }
+            }
+            override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
+                add(sec, "연결 실패: ${t.message} ${response?.code ?: ""}")
+            }
+            override fun onClosed(webSocket: okhttp3.WebSocket, code: Int, reason: String) { add(sec, "닫힘 $code $reason") }
+        })
+        main.postDelayed({
+            ws.close(1000, "끝")
+            add(sec, "결과: ${(System.currentTimeMillis() - t0) / 1000}초 동안 채팅 ${msgs}줄 (한국어 ${kor}줄)")
+            add(sec, "받은 채널: " + chans.entries.sortedByDescending { it.value }.joinToString(", ") { "${it.key}×${it.value}" })
+            progress["채팅"] = "끝 · ${msgs}줄"
+            done()
+        }, seconds * 1000L)
+    }
+
+    /** 채팅 한 줄 꺼내기: 닉네임 + 내용 */
+    private fun pickChat(o: org.json.JSONObject, d: Int = 0): String? {
+        if (d > 6) return null
+        val u = o.optJSONObject("user") ?: o.optJSONObject("userData") ?: o.optJSONObject("author")
+        val nick = u?.optString("username")?.ifEmpty { null } ?: o.optString("username").ifEmpty { null }
+        val body = o.optJSONObject("details")?.optString("body")?.ifEmpty { null } ?: o.optString("text").ifEmpty { null } ?: o.optString("body").ifEmpty { null }
+        if (nick != null && body != null) return "$nick\n$body"
+        for (k in o.keys()) {
+            val v = o.opt(k)
+            if (v is org.json.JSONObject) pickChat(v, d + 1)?.let { return it }
+        }
+        return null
     }
 
     // ---------- 1-2) 방송 대기 확인: 방송 서버의 목록(master) 주소만 가볍게 물어보기 ----------

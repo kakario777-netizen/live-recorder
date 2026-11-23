@@ -560,6 +560,7 @@ class Slot(
         @android.webkit.JavascriptInterface
         fun raw(kind: String, text: String) {
             if (!Lab.on) return
+            Lab.onWs(id, kind, text)
             val n = rawCount.merge(kind, 1, Int::plus) ?: 0
             val limit = when (kind) { "연결" -> 10; "보냄" -> 25; else -> 40 }
             if (n <= limit) Lab.add("채팅 연결 원본 ${id}번 ${streamer.ifEmpty { host }}", "$kind: " + text.take(2000))

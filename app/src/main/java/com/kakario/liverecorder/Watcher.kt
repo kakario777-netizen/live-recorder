@@ -116,7 +116,12 @@ object Watcher {
     } catch (e: Exception) { null }
 
     /** 아직 번호 모르는 자동 녹화 스트리머를 한꺼번에 (페이지 없이, 같은 머리글로) */
+    private val batching = java.util.concurrent.atomic.AtomicBoolean(false)
     private fun batchLearn(ctx: Context) {
+        if (!batching.compareAndSet(false, true)) return
+        try { batchLearn0(ctx) } finally { batching.set(false) }
+    }
+    private fun batchLearn0(ctx: Context) {
         val hs = apiHeaders ?: return
         var ok = 0; var fail = 0
         for (b in watched(ctx)) {
