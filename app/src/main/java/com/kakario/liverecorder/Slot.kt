@@ -105,6 +105,7 @@ class Slot(
         const val STALL_MS = 20_000L            // 이만큼 새 조각이 없으면 '끊김'으로 보고 확인 시작
         const val PAUSE_CHECK_MS = 30_000L      // 녹화 중 끊김(티켓방·방송 꺼짐): 30초마다 계속 확인, 포기 안 함
         const val START_WAIT_CHECK_MS = 120_000L // 방송 시작 전 대기: 2분마다 확인
+        const val RESUME_CHECK_MS = 15_000L     // 업데이트 직후 이어 받을 파일이 있을 때: 15초마다 확인
         const val NEW_FILE_AFTER_MS = 30 * 60_000L // 30분 넘게 끊겼다 돌아오면 새 방송으로 보고 새 파일
         const val TARGET_HEIGHT = 720
     }
@@ -146,8 +147,8 @@ class Slot(
     private fun log(s: String) = RecordService.addLog("[$id $host] $s")
     private fun setState(s: String) { if (state != s) { state = s; log("상태: $s") }; onUpdate() }
 
-    fun start() {
-        main.post { createPlayer() }
+    fun start(delayMs: Long = 0) {
+        main.postDelayed({ if (!stopFlag && web == null) createPlayer() }, delayMs)
         Thread({ loop() }, "slot-$id").start()
     }
 
@@ -517,6 +518,8 @@ class Slot(
     }
 
     private var appendUsed = false
+    /** 업데이트·오류 직후 이어 쓸 파일이 있는지 (먼저 시작시키는 용도) */
+    fun hasResume(): Boolean = canAppend()
     /** 업데이트 뒤 티켓방(흐린 화면)이 이어지는 동안은 이어 쓰기 기한(10분)을 계속 늘려 줌 */
     private var resumeAliveAt = 0L
 
@@ -647,11 +650,13 @@ class Slot(
                             waitingStart -> "방송 대기"
                             else -> "화질 대기중"
                         })
-                        val interval = if (everRecorded) PAUSE_CHECK_MS else START_WAIT_CHECK_MS
+                        // 업데이트·오류 직후 쓰던 파일이 있으면: 15초마다 빨리 다시 확인 (페이지를 비우지 않음)
+                        val resuming = out == null && canAppend()
+                        val interval = if (everRecorded) PAUSE_CHECK_MS else if (resuming) RESUME_CHECK_MS else START_WAIT_CHECK_MS
                         if (now - lastReload > interval) {
                             lastReload = now; sleeping = false
                             reloadPlayer()
-                        } else if (waitingStart && !sleeping && now - lastReload > 40_000) {
+                        } else if (waitingStart && !resuming && !sleeping && now - lastReload > 40_000) {
                             // 방송 대기: 확인할 때만 잠깐 열고, 평소엔 비워 둠
                             sleeping = true
                             sleepPlayer()

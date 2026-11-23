@@ -261,13 +261,22 @@ class RecordService : Service() {
         }, "sync").also { it.start() }
     }
 
-    private fun addSlot(url: String, ua: String, name: String, resumePath: String? = null): Boolean {
+    /** 다시 켜질 때: 녹화하던 방송(이어 쓸 파일 있음)을 먼저 바로 열고, 방송 대기는 3초 간격으로 천천히 열기 */
+    private fun resumeAll(jobs: List<Job>) {
+        val fresh = jobs.filter { j -> j.path?.let { java.io.File(it) }?.let { it.exists() && System.currentTimeMillis() - it.lastModified() < 10 * 60_000L } == true }
+        val rest = jobs - fresh.toSet()
+        if (fresh.isNotEmpty()) addLog("녹화하던 ${fresh.size}개 먼저 이어 받기 시작, 방송 대기 ${rest.size}개는 차례로")
+        fresh.forEach { addSlot(it.url, it.ua, it.name, it.path) }
+        rest.forEachIndexed { i, it -> addSlot(it.url, it.ua, it.name, it.path, startDelay = 5_000L + i * 3_000L) }
+    }
+
+    private fun addSlot(url: String, ua: String, name: String, resumePath: String? = null, startDelay: Long = 0): Boolean {
         synchronized(slots) {
             if (slots.size >= 100) { addLog("등록은 최대 100개까지예요"); return false }
             if (slots.any { it.pageUrl == url }) { addLog("이미 녹화 중인 방송이에요"); return false }
             val s = Slot(this, nextId++, url, ua, name, resumePath) { updateNotification() }
             slots.add(s)
-            s.start()
+            s.start(startDelay)
         }
         saveJobs(this)
         addLog("녹화 추가: ${maskUrl(url)}")
@@ -322,14 +331,14 @@ class RecordService : Service() {
                     "crash" -> addLog("앱이 오류로 꺼졌다가 스스로 다시 켜짐 → 녹화 자동 재개 (" +
                         getSharedPreferences("main", MODE_PRIVATE).getString("lastCrash", "") + ")")
                 }
-                savedJobs(this).forEach { addSlot(it.url, it.ua, it.name, it.path) }
+                resumeAll(savedJobs(this))
             }
             null -> {
                 // 시스템이 꺼진 서비스를 다시 살림 → 직접 끈 게 아니므로 이어서 녹화
                 ensureForeground()
                 val jobs = savedJobs(this)
                 if (jobs.isNotEmpty()) addLog("앱이 다시 살아남 → 녹화 ${jobs.size}개 이어서 진행")
-                jobs.forEach { addSlot(it.url, it.ua, it.name, it.path) }
+                resumeAll(jobs)
             }
         }
         Uploader.kick(this)
