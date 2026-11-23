@@ -785,6 +785,7 @@ class MainActivity : Activity() {
                     6 -> {
                         val on = !prefs.getBoolean("chatKoreanOnly", true)
                         prefs.edit().putBoolean("chatKoreanOnly", on).apply()
+                        CloudBm.settingsChanged(this)
                         Toast.makeText(this, if (on) "처음 채팅 15줄쯤 보고 한국어가 있을 때만 채팅을 저장해요" else "모든 방송의 채팅을 저장해요", Toast.LENGTH_LONG).show()
                     }
                     7 -> showCloudBm()

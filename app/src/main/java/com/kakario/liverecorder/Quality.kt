@@ -21,7 +21,8 @@ object Quality {
 
     /** 스트리머별 화질: 0 = 사이트 설정 따름, 9999 = 나오는 것 중 최고 */
     fun perUrl(ctx: Context, url: String) = prefs(ctx).getInt("url_" + url.trimEnd('/').lowercase(), 0)
-    fun setPerUrl(ctx: Context, url: String, h: Int) = prefs(ctx).edit().putInt("url_" + url.trimEnd('/').lowercase(), h).apply()
+    fun setPerUrl(ctx: Context, url: String, h: Int) { setPerUrlQuiet(ctx, url, h); CloudBm.qualityChanged(ctx) }
+    fun setPerUrlQuiet(ctx: Context, url: String, h: Int) = prefs(ctx).edit().putInt("url_" + url.trimEnd('/').lowercase(), h).apply()
     fun label(h: Int) = when (h) { 0 -> "사이트 설정 따름"; 9999 -> "최고 화질"; else -> "${h}p" }
 
     /** 설정 목록에 띄울 사이트: 직접 정한 사이트 + 즐겨찾기·녹화·방문한 사이트 */

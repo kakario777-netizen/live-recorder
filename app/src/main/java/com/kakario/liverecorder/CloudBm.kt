@@ -99,6 +99,10 @@ object CloudBm {
     private val lock = Object()
 
     /** 이 폰에서 즐겨찾기가 바뀜 → 곧 올림 */
+    /** 화질·설정을 이 폰에서 바꿈 → 시각 기록 후 올림 */
+    fun qualityChanged(ctx: Context) { prefs(ctx).edit().putLong("qt", System.currentTimeMillis()).apply(); changed(ctx) }
+    fun settingsChanged(ctx: Context) { prefs(ctx).edit().putLong("st", System.currentTimeMillis()).apply(); changed(ctx) }
+
     fun changed(ctx: Context) {
         if (!on(ctx)) return
         prefs(ctx).edit().putBoolean("dirty", true).apply()
@@ -152,10 +156,21 @@ object CloudBm {
             val remote = r.optString("data").takeIf { it.startsWith("{") }?.let { JSONObject(it) }
             val remoteB = remote?.optJSONArray("b")?.let { runCatching { Bookmarks.fromJson(it) }.getOrNull() } ?: emptyList()
             val remoteC = remote?.optJSONArray("c")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
-            // 생방 대기(자동 녹화) 표시는 폰마다 따로: 받은 목록의 표시는 버리고 이 폰 것을 유지
+            // 자동 켬/끔(생방 대기): 녹화폰 ↔ 뷰어는 같이 맞춤, 다운로드 모드 원격폰은 자기 것만 따로
+            val download = !recordHere(ctx) && !viewer(ctx)
             val myWatch = local.filter { it.watch }.map { it.url }.toSet()
-            var merged = (if (r.optBoolean("same")) local else Bookmarks.merge(local, remoteB))
-                .map { if (it.watch == (it.url in myWatch)) it else Bookmarks.Item(it.name, it.url, it.t, it.del, it.cat, it.url in myWatch) }
+            val remoteW = remoteB.associate { it.url to it.watch }
+            val firstViewer = viewer(ctx) && !p.getBoolean("viewerInit", false)
+            var merged = (if (r.optBoolean("same")) local else Bookmarks.merge(local, remoteB)).map {
+                val w = when {
+                    download -> it.url in myWatch
+                    firstViewer -> remoteW[it.url] ?: false     // 처음 뷰어로 바꿀 때는 녹화폰 기준으로
+                    else -> it.watch
+                }
+                if (w == it.watch) it else Bookmarks.Item(it.name, it.url, it.t, it.del, it.cat, w)
+            }
+            if (firstViewer) p.edit().putBoolean("viewerInit", true).apply()
+            if (!viewer(ctx)) p.edit().putBoolean("viewerInit", false).apply()
             // 다른 폰에서 새로 들어온 즐겨찾기는 녹화폰에서 바로 '생방 대기'로 (원격폰은 따로 녹화하므로 그대로)
             val had = local.map { it.url }.toSet()
             val fresh = merged.filter { !it.del && !it.watch && it.url !in had }.map { it.url }.toSet()
@@ -167,7 +182,24 @@ object CloudBm {
             val cats = (Bookmarks.cats(ctx) + remoteC).distinct()
             Bookmarks.saveAll(ctx, merged)
             Bookmarks.setCats(ctx, cats)
-            val out = JSONObject().put("b", Bookmarks.toJson(merged.map { Bookmarks.Item(it.name, it.url, it.t, it.del, it.cat, false) })).put("c", JSONArray(cats)).toString()
+            // 화질(방송별)·채팅 설정: 녹화폰 ↔ 뷰어는 더 최근에 바꾼 쪽으로 맞춤
+            val sharedOk = !download
+            val rq = remote?.optJSONObject("q"); val rqt = remote?.optLong("qt") ?: 0L
+            if (sharedOk && rq != null && rqt > p.getLong("qt", 0)) {
+                rq.keys().forEach { u -> Quality.setPerUrlQuiet(ctx, u, rq.optInt(u)) }
+                p.edit().putLong("qt", rqt).apply()
+            }
+            val rs = remote?.optJSONObject("s"); val rst = remote?.optLong("st") ?: 0L
+            if (sharedOk && rs != null && rst > p.getLong("st", 0)) {
+                ctx.getSharedPreferences("main", Context.MODE_PRIVATE).edit().putBoolean("chatKoreanOnly", rs.optBoolean("chatKoreanOnly", true)).apply()
+                p.edit().putLong("st", rst).apply()
+            }
+            val qOut = if (sharedOk) JSONObject().also { q -> merged.filter { !it.del }.forEach { b -> Quality.perUrl(ctx, b.url).takeIf { it > 0 }?.let { q.put(b.url, it) } } } else (rq ?: JSONObject())
+            val sOut = if (sharedOk) JSONObject().put("chatKoreanOnly", ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("chatKoreanOnly", true)) else (rs ?: JSONObject())
+            val bOut = merged.map { if (download) Bookmarks.Item(it.name, it.url, it.t, it.del, it.cat, remoteW[it.url] ?: false) else it }
+            val out = JSONObject().put("b", Bookmarks.toJson(bOut)).put("c", JSONArray(cats))
+                .put("q", qOut).put("qt", if (sharedOk) maxOf(p.getLong("qt", 0), rqt) else rqt)
+                .put("s", sOut).put("st", if (sharedOk) maxOf(p.getLong("st", 0), rst) else rst).toString()
             var newVer = remoteVer
             if (dirty || remote == null || out != remote.toString()) {
                 newVer = post(base, out).optLong("ver", remoteVer)
