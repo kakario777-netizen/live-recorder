@@ -49,7 +49,7 @@ class BookmarksActivity : Activity() {
         root.setOnApplyWindowInsetsListener { v, ins -> v.setPadding(0, ins.systemWindowInsetTop, 0, ins.systemWindowInsetBottom); ins }
         if (CloudBm.viewer(this)) root.setBackgroundColor(Color.parseColor("#E3F2FD"))
         if (CloudBm.viewer(this)) root.addView(TextView(this).apply {
-            text = "뷰어 · 녹화폰 즐겨찾기를 보는 중 (여기서 바꾸면 녹화폰에 적용)"; textSize = 12f; setTextColor(Color.WHITE)
+            text = "뷰어 · 녹화폰 즐겨찾기 (자동 켬/끔은 녹화폰 설정 · 이 폰은 실제로 대기하지 않음)"; textSize = 12f; setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#1E88E5")); setPadding(dp(14), dp(6), dp(14), dp(6))
         })
 
@@ -180,13 +180,15 @@ class BookmarksActivity : Activity() {
             row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
             // 자동 녹화 켜기/끄기 (방송 켜지면 받고, 끝나면 목록에서 빠짐)
             row.addView(TextView(this).apply {
-                text = if (b.watch) "자동 켬" else "자동 끔"; textSize = 12f
+                // 뷰어: 이 폰은 실제로 대기하지 않음 — 녹화폰 자동 녹화를 켜고 끄는 표시 (파란색)
+                val vw = CloudBm.viewer(this@BookmarksActivity)
+                text = if (vw) (if (b.watch) "녹화폰 자동 켬" else "녹화폰 자동 끔") else (if (b.watch) "자동 켬" else "자동 끔"); textSize = 12f
                 setTextColor(if (b.watch) Color.WHITE else Color.parseColor("#555555"))
                 setPadding(dp(10), dp(5), dp(10), dp(5))
-                background = GradientDrawable().apply { setColor(Color.parseColor(if (b.watch) "#D32F2F" else "#E0E0E0")); cornerRadius = dp(14).toFloat() }
+                background = GradientDrawable().apply { setColor(Color.parseColor(if (b.watch) (if (vw) "#1E88E5" else "#D32F2F") else "#E0E0E0")); cornerRadius = dp(14).toFloat() }
                 setOnClickListener {
                     Bookmarks.setWatch(this@BookmarksActivity, listOf(b.url), !b.watch)
-                    if (!b.watch) RecordService.startWatch(this@BookmarksActivity)
+                    if (!b.watch && !vw) RecordService.startWatch(this@BookmarksActivity)
                     renderList()
                 }
             }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(6), 0, dp(4), 0) })
