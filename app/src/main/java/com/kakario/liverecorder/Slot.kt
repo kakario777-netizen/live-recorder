@@ -468,7 +468,7 @@ class Slot(
         rateLog.sumOf { it.second.toLong() } / 20
     }
 
-    /** 실제로 영상을 받는 중인지 (동시 10개·속도 한도 계산용) */
+    /** 실제로 영상을 받는 중인지 (속도 한도 계산용) */
     val isDownloading: Boolean get() = state == "녹화 중" || state == "화질 대기중"
 
     // ---------- 조각 저장 ----------
@@ -751,11 +751,11 @@ class Slot(
                             cache.remove(key)
                             continue
                         }
-                        // 동시 10개·속도 한도 확인
+                        // 속도 한도 확인
                         if (!RecordService.canStart(this)) {
                             queued = true
                             setState("순서 대기")
-                            log("동시 받기 10개 또는 속도 한도(초당 7.5MB)가 꽉 차서 순서 대기")
+                            log("받기 속도 한도(초당 7.5MB)가 꽉 차서 순서 대기")
                             q.clear(); cache.clear()
                             sleepPlayer()
                             continue
@@ -826,7 +826,7 @@ class Slot(
             "녹화 중" -> "$state · ${min}분 · ${bytes / 1024 / 1024}MB" + (if (quality.isNotEmpty()) " · $quality" else "") +
                 (if (codec.isNotEmpty()) " $codec" else "") + (if (noAudio) " · 소리 없음!" else "") +
                 " · ${rateBps() / 1024}KB/s"
-            "순서 대기" -> "순서 대기 (동시 10개 또는 속도 한도 꽉 참 — 자리 나면 시작)"
+            "순서 대기" -> "순서 대기 (속도 한도 꽉 참 — 여유 생기면 시작)"
             else -> state
         }
     }
