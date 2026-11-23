@@ -47,9 +47,10 @@ class BookmarksActivity : Activity() {
         cur = getSharedPreferences("main", MODE_PRIVATE).getString("bmLastCat", ALL) ?: ALL
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE) }
         root.setOnApplyWindowInsetsListener { v, ins -> v.setPadding(0, ins.systemWindowInsetTop, 0, ins.systemWindowInsetBottom); ins }
+        if (CloudBm.viewer(this)) root.setBackgroundColor(Color.parseColor("#E3F2FD"))
         if (CloudBm.viewer(this)) root.addView(TextView(this).apply {
             text = "뷰어 · 녹화폰 즐겨찾기를 보는 중 (여기서 바꾸면 녹화폰에 적용)"; textSize = 12f; setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#1565C0")); setPadding(dp(14), dp(6), dp(14), dp(6))
+            setBackgroundColor(Color.parseColor("#1E88E5")); setPadding(dp(14), dp(6), dp(14), dp(6))
         })
 
         // 맨 위: 제목 + 폴더 만들기 + 닫기

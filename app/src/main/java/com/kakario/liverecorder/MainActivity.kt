@@ -136,6 +136,16 @@ class MainActivity : Activity() {
         recLabel.setTypeface(null, Typeface.BOLD)
         menu.addView(rec, LinearLayout.LayoutParams(0, -2, 1f))
         root.addView(menu)
+        // 뷰어 모드: 화면 전체를 연한 하늘색으로 + 위에 띠 (녹화폰을 보고 있다는 표시)
+        if (CloudBm.viewer(this)) {
+            val sky = Color.parseColor("#E3F2FD")
+            root.setBackgroundColor(sky); top.setBackgroundColor(sky); menu.setBackgroundColor(sky)
+            root.addView(TextView(this).apply {
+                text = "뷰어 모드 · 녹화폰을 보고 있어요 (여기서 하는 건 녹화폰에 적용)"; textSize = 12f; setTextColor(Color.WHITE)
+                setBackgroundColor(Color.parseColor("#1E88E5")); setPadding(dp(14), dp(5), dp(14), dp(5))
+                setOnClickListener { showCloudBm() }
+            }, 0)
+        }
 
         // 셋째 줄: 받는 중 현황 한 줄 (누르면 상세)
         info = TextView(this).apply {
@@ -764,36 +774,70 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 설정 메뉴: 화질·진단·기록·업데이트 */
+    /** 설정: 구역마다 제목과 구분선, 켜고 끄는 건 토글 */
     private fun showSettingsMenu() {
-        val labels = prefs.getBoolean("showLabels", true)
-        val items = arrayOf("다운 화질 (사이트별)", "NAS 업로드·폰끼리 동기화", "아이콘 이름 표시: " + (if (labels) "켜짐 (누르면 끄기)" else "꺼짐 (누르면 켜기)"),
-            "진단 (문제 생겼을 때)", "녹화 기록 보기", "업데이트 확인",
-            "채팅 저장: " + (if (prefs.getBoolean(CloudBm.chatKey(this), true)) "한국어 방송만 (켜짐 · 누르면 끄기)" else "모든 방송 (꺼짐 · 누르면 켜기)"),
-            "폰 역할 · 즐겨찾기 맞추기: " + (if (CloudBm.recordHere(this)) "녹화폰" else if (CloudBm.viewer(this)) "원격폰(뷰어)" else "원격폰(다운로드)"),
-            "녹화폰 현황 보기 (원격폰에서)") +
-            (if (Lab.on) arrayOf("실험실 (가볍게 받기 시험)") else emptyArray())
-        AlertDialog.Builder(this)
-            .setTitle("설정")
-            .setItems(items) { _, i ->
-                when (i) {
-                    0 -> showQualitySettings()
-                    1 -> { innerNav = true; startActivity(Intent(this, FilesActivity::class.java).putExtra("openFtp", true)) }
-                    2 -> { prefs.edit().putBoolean("showLabels", !labels).apply(); saveTabs(); recreate() }
-                    3 -> diagnose()
-                    4 -> showLog()
-                    5 -> updater.check(silent = false)
-                    6 -> {
-                        val on = !prefs.getBoolean(CloudBm.chatKey(this), true)
-                        prefs.edit().putBoolean(CloudBm.chatKey(this), on).apply()
-                        CloudBm.settingsChanged(this)
-                        Toast.makeText(this, if (on) "처음 채팅 15줄쯤 보고 한국어가 있을 때만 채팅을 저장해요" else "모든 방송의 채팅을 저장해요", Toast.LENGTH_LONG).show()
-                    }
-                    7 -> showCloudBm()
-                    8 -> if (CloudBm.recordHere(this)) askRecorderStatus() else startActivity(Intent(this, RemoteStatusActivity::class.java))
-                    9 -> showLab()
-                }
+        val ctx = this
+        var dlg: AlertDialog? = null
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(4), 0, dp(8)) }
+        fun section(title: String) {
+            box.addView(TextView(ctx).apply {
+                text = title; textSize = 12f; setTypeface(null, android.graphics.Typeface.BOLD)
+                setTextColor(Color.parseColor("#1565C0")); setPadding(dp(22), dp(16), dp(22), dp(6))
+            })
+        }
+        fun line() = box.addView(View(ctx).apply { setBackgroundColor(Color.parseColor("#E6E6E6")) }, LinearLayout.LayoutParams(-1, 1).apply { setMargins(dp(22), 0, dp(22), 0) })
+        fun row(title: String, sub: String = "", onClick: () -> Unit) {
+            val r = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(12), dp(22), dp(12))
+                isClickable = true; background = android.util.TypedValue().let { tv -> theme.resolveAttribute(android.R.attr.selectableItemBackground, tv, true); getDrawable(tv.resourceId) }
+                setOnClickListener { dlg?.dismiss(); onClick() }
             }
+            r.addView(TextView(ctx).apply { text = title; textSize = 16f; setTextColor(Color.parseColor("#222222")) })
+            if (sub.isNotEmpty()) r.addView(TextView(ctx).apply { text = sub; textSize = 12f; setTextColor(Color.parseColor("#777777")) })
+            box.addView(r)
+        }
+        fun toggle(title: String, sub: String, on: Boolean, onChange: (Boolean) -> Unit) {
+            val r = LinearLayout(ctx).apply { gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(dp(22), dp(8), dp(14), dp(8)) }
+            val texts = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+            texts.addView(TextView(ctx).apply { text = title; textSize = 16f; setTextColor(Color.parseColor("#222222")) })
+            if (sub.isNotEmpty()) texts.addView(TextView(ctx).apply { text = sub; textSize = 12f; setTextColor(Color.parseColor("#777777")) })
+            r.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+            val sw = android.widget.Switch(ctx).apply { isChecked = on; setOnCheckedChangeListener { _, v -> onChange(v) } }
+            r.addView(sw)
+            r.setOnClickListener { sw.toggle() }
+            box.addView(r)
+        }
+        val role = if (CloudBm.recordHere(this)) "녹화폰" else if (CloudBm.viewer(this)) "원격폰 · 뷰어 모드" else "원격폰 · 다운로드 모드"
+
+        section("녹화")
+        row("다운 화질", "사이트별 최대 화질") { showQualitySettings() }
+        line()
+        toggle("채팅은 한국어 방송만 저장", "처음 채팅 15줄쯤 보고 한국어가 있을 때만", prefs.getBoolean(CloudBm.chatKey(this), true)) { v ->
+            prefs.edit().putBoolean(CloudBm.chatKey(ctx), v).apply(); CloudBm.settingsChanged(ctx)
+        }
+
+        section("폰 연결")
+        row("폰 역할 · 즐겨찾기 맞추기", "지금: $role") { showCloudBm() }
+        line()
+        if (!CloudBm.recordHere(this)) { row("녹화폰 현황 보기", "녹화폰에서 받는 중인 방송") { startActivity(Intent(ctx, RemoteStatusActivity::class.java)) }; line() }
+        row("NAS 업로드", "정리된 파일 자동 업로드 설정") { innerNav = true; startActivity(Intent(ctx, FilesActivity::class.java).putExtra("openFtp", true)) }
+
+        section("화면")
+        toggle("아이콘 아래 이름 표시", "", prefs.getBoolean("showLabels", true)) { v ->
+            prefs.edit().putBoolean("showLabels", v).apply(); dlg?.dismiss(); saveTabs(); recreate()
+        }
+
+        section("기록 · 도움")
+        row("녹화 기록 보기", "최근 6시간 기록 복사") { showLog() }
+        line()
+        row("진단", "문제가 생겼을 때") { diagnose() }
+        line()
+        row("업데이트 확인", "") { updater.check(silent = false) }
+        if (Lab.on) { line(); row("실험실", "가볍게 받기 시험") { showLab() } }
+
+        dlg = AlertDialog.Builder(this)
+            .setTitle("설정")
+            .setView(ScrollView(this).apply { addView(box) })
             .setNegativeButton("닫기", null)
             .show()
     }
@@ -1091,6 +1135,7 @@ class MainActivity : Activity() {
     /** 폰 역할 · 즐겨찾기 맞추기 (메인 계정 드라이브) · 녹화폰 알림 */
     private fun showCloudBm() {
         val ctx = this@MainActivity
+        val h0 = android.os.Handler(android.os.Looper.getMainLooper())
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(8), dp(18), 0) }
         box.addView(TextView(this).apply {
             textSize = 13f
@@ -1123,6 +1168,7 @@ class MainActivity : Activity() {
                 CloudBm.setNotifyOn(ctx, nt.isChecked)
                 CloudBm.setViewer(ctx, vw.isChecked)
                 if (Watcher.any(ctx)) RecordService.startWatch(ctx)
+                h0.postDelayed({ saveTabs(); recreate() }, 300)   // 뷰어/다운로드 색·화면 바로 바꾸기
                 Toast.makeText(ctx, if (rec) "이 폰은 녹화폰이에요" else if (vw.isChecked) "원격폰 · 뷰어 모드 (녹화는 녹화폰에서)" else "원격폰 · 다운로드 모드 (이 폰에서도 따로 녹화)", Toast.LENGTH_SHORT).show()
                 Thread { CloudBm.sync(applicationContext) }.start()
             }

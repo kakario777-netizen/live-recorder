@@ -37,7 +37,7 @@ class RemoteStatusActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.parseColor("#F5F6F8")) }
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.parseColor("#E3F2FD")) }
         root.setOnApplyWindowInsetsListener { v, ins -> v.setPadding(0, ins.systemWindowInsetTop, 0, ins.systemWindowInsetBottom); ins }
 
         val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(10), dp(6), dp(4)) }
@@ -53,6 +53,10 @@ class RemoteStatusActivity : Activity() {
             text = "닫기"; isAllCaps = false; textSize = 13f; setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#555555"))
             setOnClickListener { finish() }
         })
+        root.addView(TextView(this).apply {
+            text = "뷰어 모드 · 녹화폰 현황"; textSize = 12f; setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#1E88E5")); setPadding(dp(14), dp(5), dp(14), dp(5))
+        }, 0)
         root.addView(top)
 
         val sumBox = LinearLayout(this).apply { setPadding(dp(10), dp(2), dp(10), dp(4)) }
