@@ -183,6 +183,24 @@ object Tidy {
         Uploader.enqueue(ctx, job.name, job.path ?: pathFor(job.name), job.streamer, allowH264 = true)
     }
 
+    /** 남은 파일 자동 정리: 정리 안 됐고, 어디에도 안 걸려 있고, 15분 넘게 안 바뀐 녹화 파일 */
+    fun sweep(ctx: Context) {
+        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "LiveRecorder")
+        val active = RecordService.fileStates().keys
+        val now = System.currentTimeMillis()
+        dir.listFiles()?.filter { it.isFile && it.name.lowercase().endsWith(".mp4") }?.forEach { f ->
+            val n = f.name
+            if (n in active || isTidied(ctx, n) || statusOf(n) != null || Uploader.statusOf(n) != null) return@forEach
+            if (now - f.lastModified() < 15 * 60_000L || f.length() == 0L) return@forEach
+            RecordService.addLog("남아 있던 파일 자동 정리: $n")
+            enqueue(ctx, Job(n, f.absolutePath, null, Names.streamerFromFileName(n)))
+        }
+    }
+
+    /** 파일 목록 표시용: 정리 안 된 채 남은 파일이 곧 자동 정리되는지 */
+    fun pendingSweep(f: Long): String =
+        if (System.currentTimeMillis() - f < 15 * 60_000L) "녹화 끝 · 곧 자동 정리" else "자동 정리 대기"
+
     fun isFailed(name: String) = synchronized(queue) { failed.any { it.name == name } }
 
     /** 충전 대기 파일이 있으면 1분마다 충전기 확인 (꽂힌 채로 대기에 들어간 경우 대비) */
@@ -248,6 +266,14 @@ object Tidy {
             current = null
             onChange?.invoke()
             onIdle?.invoke()
+            return
+        }
+        // 아직 방송 칸이 쓰고 있는(또는 이어 쓸) 파일이면 건드리지 않고 나중으로
+        if (RecordService.isActiveFile(job.name)) {
+            // 빼 두기만 함: 녹화가 끝나면 방송 칸이 다시 넣고, 아니면 자동 정리(5분마다)가 찾아서 넣음
+            RecordService.addLog("아직 녹화·이어받기 중인 파일이라 지금은 정리 안 함 (끝나면 자동으로): ${job.name}")
+            persist()
+            handler?.post { next(ctx) }
             return
         }
         current = job

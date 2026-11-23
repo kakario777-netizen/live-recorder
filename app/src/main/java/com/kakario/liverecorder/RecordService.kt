@@ -108,6 +108,10 @@ class RecordService : Service() {
         /** 녹화 중인 파일 이름들 (파일 목록에서 '녹화 중' 표시용) */
         fun recordingNames(): Set<String> = list().map { it.fileName }.filter { it.isNotEmpty() }.toSet()
 
+        /** 지금 방송 칸이 붙잡고 있는 파일 → 상태 글 (녹화 중 / 이어받기 대기) */
+        fun fileStates(): Map<String, String> = list().filter { !it.isEnded() }.flatMap { it.fileStates() }.toMap()
+        fun isActiveFile(name: String) = fileStates().containsKey(name)
+
         fun resume(ctx: Context) {
             ctx.startForegroundService(Intent(ctx, RecordService::class.java).setAction(ACTION_RESUME))
         }
@@ -237,7 +241,7 @@ class RecordService : Service() {
         // 3초마다 알림 갱신
         ticker.removeCallbacksAndMessages(null)
         ticker.post(object : Runnable {
-            override fun run() { lastNotify = 0; updateNotification(); if (running || Tidy.busy() || Uploader.busy() || Sync.isRecorder(this@RecordService)) ticker.postDelayed(this, 3000) }
+            override fun run() { lastNotify = 0; updateNotification(); sweepTick(); if (running || Tidy.busy() || Uploader.busy() || Sync.isRecorder(this@RecordService)) ticker.postDelayed(this, 3000) }
         })
     }
 
@@ -268,6 +272,15 @@ class RecordService : Service() {
         if (fresh.isNotEmpty()) addLog("녹화하던 ${fresh.size}개 먼저 이어 받기 시작, 방송 대기 ${rest.size}개는 차례로")
         fresh.forEach { addSlot(it.url, it.ua, it.name, it.path) }
         rest.forEachIndexed { i, it -> addSlot(it.url, it.ua, it.name, it.path, startDelay = 5_000L + i * 3_000L) }
+    }
+
+    private var lastSweep = 0L
+    /** 5분마다: 아무도 손대지 않은 녹화 파일(오류 등으로 남은 것)을 찾아 자동 정리 */
+    private fun sweepTick() {
+        val now = System.currentTimeMillis()
+        if (now - lastSweep < 5 * 60_000L) return
+        lastSweep = now
+        Thread { try { Tidy.sweep(this) } catch (_: Exception) {} }.start()
     }
 
     private fun addSlot(url: String, ua: String, name: String, resumePath: String? = null, startDelay: Long = 0): Boolean {

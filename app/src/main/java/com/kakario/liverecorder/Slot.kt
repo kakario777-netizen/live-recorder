@@ -185,6 +185,7 @@ class Slot(
     }
 
     /** 사용자가 직접 멈춤 */
+    fun isEnded() = state.startsWith("끝")
     fun stop() { userStopped = true; stopFlag = true; Loading.leave(id) }
 
     /** 앱 종료 등으로 멈춤 (나중에 이어서 녹화할 대상) */
@@ -630,6 +631,39 @@ class Slot(
     }
 
     private var appendUsed = false
+    private var resumeReleased = false
+
+    /** 파일 목록 표시용: 이 방송이 붙잡고 있는 파일들과 그 상태 */
+    fun fileStates(): List<Pair<String, String>> {
+        val l = ArrayList<Pair<String, String>>()
+        val who = "${id}번 ${streamer.ifEmpty { host }}"
+        if (fileName.isNotEmpty() && out != null) {
+            l += fileName to when (state) {
+                "녹화 중" -> "녹화 중 · $who"
+                "일시정지" -> "이어받기 대기 · $who (" + (when (pauseKind) { "ticket" -> "티켓방"; "ended" -> "방송 종료 확인 중"; else -> "끊김" }) + ", 방송이 다시 나오면 같은 파일에 이어 붙임)"
+                else -> "녹화 중 · $who ($state)"
+            }
+        }
+        if (blurOut != null && blurName.isNotEmpty()) l += blurName to "녹화 중 · $who (티켓방 흐린 화면)"
+        val rp = resumePath
+        if (out == null && !appendUsed && rp != null && canAppend()) {
+            val f = java.io.File(rp)
+            val left = ((10 * 60_000L - (System.currentTimeMillis() - maxOf(f.lastModified(), resumeAliveAt))) / 60_000L + 1).coerceAtLeast(1)
+            l += f.name to "이어받기 대기 · $who (앱이 다시 켜짐, ${left}분 안에 방송이 나오면 이어 붙임)"
+        }
+        return l
+    }
+
+    /** 앱이 다시 켜진 뒤 이어 쓰지 못한 예전 파일 → 이제 정리로 보냄 */
+    private fun releaseResume(why: String) {
+        if (resumeReleased || appendUsed) return
+        val rp = resumePath ?: return
+        resumeReleased = true
+        val f = java.io.File(rp)
+        if (!f.exists() || f.length() == 0L) return
+        log("이어 쓰지 못한 예전 파일은 완료로 보고 정리: ${f.name} ($why)")
+        Tidy.enqueue(ctx, Tidy.Job(f.name, f.absolutePath, null, streamer))
+    }
     /** 업데이트·오류 직후 이어 쓸 파일이 있는지 (먼저 시작시키는 용도) */
     fun hasResume(): Boolean = canAppend()
     /** 업데이트 뒤 티켓방(흐린 화면)이 이어지는 동안은 이어 쓰기 기한(10분)을 계속 늘려 줌 */
@@ -724,6 +758,7 @@ class Slot(
                 val c = q.poll(1, TimeUnit.SECONDS)
                 val now = System.currentTimeMillis()
                 if (retryRequested) { retryRequested = false; lastReload = now; sleeping = false }
+                if (!resumeReleased && !appendUsed && resumePath != null && out == null && !canAppend()) releaseResume("10분 안에 방송이 안 나옴")
                 tryOpen(now)
                 if (c == null) {
                     // 순서 대기: 자리가 나면 다시 열어서 시작
@@ -938,7 +973,11 @@ class Slot(
             mediaUri?.let { Saver.finish(ctx, it) }
             path?.let { Saver.scan(ctx, it) }
             // 녹화가 끝난 파일은 별도 작업 공간에서 정리(목차 붙이기) 후 완성 처리
-            if (bytes > 0 && out != null) Tidy.enqueue(ctx, Tidy.Job(fileName, path, mediaUri, streamer))
+            // 앱이 꺼지는 중(업데이트·재시작)이면 정리하지 않음 → 다시 켜지면 같은 파일에 이어 씀
+            if (userStopped) {
+                if (bytes > 0 && out != null) Tidy.enqueue(ctx, Tidy.Job(fileName, path, mediaUri, streamer))
+                if (out == null) releaseResume("직접 중지")
+            }
             destroyPlayer()
             cache.clear()
             state = if (bytes > 0) "끝 · ${bytes / 1024 / 1024}MB 저장" else "끝 · 저장된 영상 없음"

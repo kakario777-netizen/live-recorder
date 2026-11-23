@@ -85,9 +85,21 @@ class FilesActivity : Activity() {
         Uploader.onChange = { runOnUiThread { if (Uploader.current == null) reload() else render() } }
     }
 
+    private val refresher = android.os.Handler(android.os.Looper.getMainLooper())
+    private val refreshTick = object : Runnable {
+        override fun run() { val y = scroll.scrollY; render(); scroll.post { scroll.scrollTo(0, y) }; refresher.postDelayed(this, 10_000) }
+    }
+
     override fun onResume() {
         super.onResume()
         reload()
+        Thread { try { if (!RecordService.running) Tidy.sweep(this) } catch (_: Exception) {} }.start()
+        refresher.postDelayed(refreshTick, 10_000)
+    }
+
+    override fun onPause() {
+        refresher.removeCallbacks(refreshTick)
+        super.onPause()
     }
 
     override fun onDestroy() {
@@ -133,9 +145,10 @@ class FilesActivity : Activity() {
         dayHeaders.clear()
         // 내 폰에 있는 파일 + 업로드까지 끝나 폰에서는 빠진 파일(업로드 기록)을 날짜순으로 함께
         val localNames = items.map { it.name }.toHashSet()
+        val active = RecordService.fileStates()
         val entries = (items.map { Entry(it.date * 1000, it, null) } +
             Uploader.history(this).filter { it.name !in localNames }.map { Entry(it.time, null, it) })
-            .sortedByDescending { it.time }
+            .sortedWith(compareBy<Entry>({ if (it.local?.name in active) 0 else 1 }, { -it.time }))
         if (entries.isEmpty()) {
             listBox.addView(TextView(this).apply { text = "아직 녹화한 파일이 없어요"; setPadding(dp(16), dp(24), dp(16), 0) })
             fast.update()
@@ -146,7 +159,8 @@ class FilesActivity : Activity() {
         val bubbleFmt = SimpleDateFormat("M월 d일", Locale.KOREA)
         var lastDay = ""
         entries.forEach { e ->
-            val day = dayFmt.format(Date(e.time))
+            val isActive = e.local?.name in active
+            val day = if (isActive) "지금 녹화 중 · 이어받기 대기" else dayFmt.format(Date(e.time))
             if (day != lastDay) {
                 lastDay = day
                 val h = TextView(this).apply {
@@ -155,7 +169,8 @@ class FilesActivity : Activity() {
                     setPadding(dp(14), dp(6), dp(14), dp(6))
                 }
                 listBox.addView(h)
-                dayHeaders.add(h to bubbleFmt.format(Date(e.time)))
+                if (isActive) { h.setTextColor(Color.WHITE); h.setBackgroundColor(Color.parseColor("#C62828")) }
+                dayHeaders.add(h to (if (isActive) "녹화 중" else bubbleFmt.format(Date(e.time))))
             }
             val hist = e.hist
             if (hist != null) {
@@ -206,15 +221,29 @@ class FilesActivity : Activity() {
             row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
 
             // 녹화 중 / 정리 중… N% / 정리 대기 / 정리 버튼
-            val recording = item.name in RecordService.recordingNames()
+            val actState = active[item.name]
+            val recording = actState != null
             val tidyState = Tidy.statusOf(item.name) ?: Uploader.statusOf(item.name)
+            // 모든 파일에 지금 상태를 글로 보여 줌
+            val isMp4 = item.name.lowercase().endsWith(".mp4")
+            val stateText = when {
+                actState != null -> actState
+                tidyState != null -> tidyState
+                !isMp4 -> null
+                Tidy.isTidied(this, item.name) -> if (FtpConfig.ready(this)) "정리 완료 · 업로드 안 됨" else "정리 완료 (업로드 꺼짐)"
+                else -> Tidy.pendingSweep(item.date * 1000)
+            }
+            if (stateText != null) texts.addView(TextView(this).apply {
+                text = stateText; textSize = 12f; setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor(when {
+                    actState?.startsWith("녹화 중") == true -> "#D32F2F"
+                    actState != null -> "#EF6C00"
+                    stateText.startsWith("변환 실패") || stateText.startsWith("업로드 실패") -> "#B71C1C"
+                    stateText.startsWith("정리 완료") -> "#2E7D32"
+                    else -> "#1565C0"
+                }))
+            })
             if (recording || tidyState != null) {
-                row.addView(TextView(this).apply {
-                    text = if (recording) "녹화 중" else tidyState
-                    textSize = 13f
-                    setTextColor(Color.parseColor(if (recording) "#D32F2F" else "#1565C0"))
-                    setPadding(dp(8), 0, dp(8), 0)
-                })
                 if (tidyState?.startsWith("충전 대기") == true) {
                     row.addView(Button(this).apply {
                         text = "지금 변환"; isAllCaps = false; textSize = 13f
