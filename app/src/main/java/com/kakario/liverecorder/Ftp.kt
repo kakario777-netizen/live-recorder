@@ -93,7 +93,7 @@ object Uploader {
 
     const val TRASH_DAYS = 7
 
-    fun recDir(): File = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "LiveRecorder")
+    fun recDir(): File = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), Saver.DIR)
     fun trashDir(): File = File(recDir(), "휴지통").apply {
         mkdirs()
         File(this, ".nomedia").let { if (!it.exists()) try { it.createNewFile() } catch (_: Exception) {} }
@@ -139,7 +139,7 @@ object Uploader {
     fun pendingCount(ctx: Context): Int { load(ctx); return synchronized(queue) { queue.size } + (if (current != null) 1 else 0) }
 
     fun enqueue(ctx: Context, name: String, path: String?, streamer: String, allowH264: Boolean = false) {
-        if (path == null || !FtpConfig.ready(ctx)) return
+        if (path == null || !FtpConfig.ready(ctx) || BuildConfig.LAB) return
         // H.264는 변환 후에만 올림 (변환 설정이 켜져 있을 때). 변환 실패 파일은 다시 넣지 않음
         if (!allowH264 && Tidy.isFailed(name)) { RecordService.addLog("변환 실패 파일이라 업로드하지 않음 (파일 목록에서 직접 선택 가능): $name"); return }
         if (!allowH264 && Tidy.autoH265(ctx) && Codec.phoneHasHevcEncoder() && name.lowercase().endsWith(".mp4") &&

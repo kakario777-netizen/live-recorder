@@ -731,7 +731,7 @@ class MainActivity : Activity() {
     private fun showSettingsMenu() {
         val labels = prefs.getBoolean("showLabels", true)
         val items = arrayOf("다운 화질 (사이트별)", "NAS 업로드·폰끼리 동기화", "아이콘 이름 표시: " + (if (labels) "켜짐 (누르면 끄기)" else "꺼짐 (누르면 켜기)"),
-            "진단 (문제 생겼을 때)", "녹화 기록 보기", "업데이트 확인")
+            "진단 (문제 생겼을 때)", "녹화 기록 보기", "업데이트 확인") + (if (Lab.on) arrayOf("실험실 (가볍게 받기 시험)") else emptyArray())
         AlertDialog.Builder(this)
             .setTitle("설정")
             .setItems(items) { _, i ->
@@ -742,10 +742,51 @@ class MainActivity : Activity() {
                     3 -> diagnose()
                     4 -> showLog()
                     5 -> updater.check(silent = false)
+                    6 -> showLab()
                 }
             }
             .setNegativeButton("닫기", null)
             .show()
+    }
+
+    /** 실험판: 숨은 재생기 없이 가볍게 받기 시험 */
+    private fun showLab() {
+        val items = arrayOf(
+            "① 방송 대기 확인 시험 (등록·즐겨찾기 전부)",
+            "② 직접 받기 시험 (녹화 중인 방송, 90초)",
+            "③ 결과 복사 (붙여넣어 보내 주세요)",
+            "결과 지우고 처음부터")
+        AlertDialog.Builder(this).setTitle("실험실")
+            .setItems(items) { _, i ->
+                when (i) {
+                    0 -> {
+                        val names = LinkedHashSet<String>()
+                        var host = "ko.stripchat.com"
+                        RecordService.list().forEach { sl -> Names.streamerFromUrl(sl.pageUrl).takeIf { it.isNotEmpty() }?.let { names.add(it); host = sl.host } }
+                        Bookmarks.list(this).forEach { b -> if (b.url.contains("stripchat")) Names.streamerFromUrl(b.url).takeIf { it.isNotEmpty() }?.let { names.add(it) } }
+                        Toast.makeText(this, "${names.size}명 확인 시작… 끝나면 알려 드려요", Toast.LENGTH_SHORT).show()
+                        Lab.checkerTest(this, host, names.toList(), web.settings.userAgentString) {
+                            Toast.makeText(this, "① 끝났어요. ③ 결과 복사를 눌러 주세요", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                    1 -> {
+                        val ids = Lab.probes.values.filter { it.playlists.isNotEmpty() }.map { it.slotId }.take(3)
+                        if (ids.isEmpty()) { Toast.makeText(this, "녹화 중인 방송이 1분 이상 받아진 뒤 다시 눌러 주세요", Toast.LENGTH_LONG).show(); return@setItems }
+                        var left = ids.size
+                        Toast.makeText(this, "${ids.size}개 방송 직접 받기 90초 시험 시작", Toast.LENGTH_SHORT).show()
+                        ids.forEach { id -> Lab.directTest(this, id, 90) {
+                            left--
+                            if (left == 0) Toast.makeText(this, "② 끝났어요. ③ 결과 복사를 눌러 주세요", Toast.LENGTH_LONG).show()
+                        } }
+                    }
+                    2 -> {
+                        val path = Lab.export(this)
+                        Toast.makeText(this, "복사했어요. 채팅에 붙여넣어 주세요\n(파일: $path)", Toast.LENGTH_LONG).show()
+                    }
+                    3 -> { Lab.clear(); Toast.makeText(this, "지웠어요", Toast.LENGTH_SHORT).show() }
+                }
+            }
+            .setNegativeButton("닫기", null).show()
     }
 
     /** 설정 › 다운 화질: 사이트마다 최대 화질(1080p / 720p / 480p) 고르기 */

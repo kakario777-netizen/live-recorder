@@ -185,7 +185,7 @@ object Tidy {
 
     /** 남은 파일 자동 정리: 정리 안 됐고, 어디에도 안 걸려 있고, 15분 넘게 안 바뀐 녹화 파일 */
     fun sweep(ctx: Context) {
-        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "LiveRecorder")
+        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), Saver.DIR)
         val active = RecordService.fileStates().keys
         val now = System.currentTimeMillis()
         dir.listFiles()?.filter { it.isFile && it.name.lowercase().endsWith(".mp4") }?.forEach { f ->
@@ -236,11 +236,12 @@ object Tidy {
 
     /** 녹화 폴더 안 실제 파일 경로(앱이 직접 만든 파일이면 있음) */
     fun pathFor(name: String): String? {
-        val f = File(File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "LiveRecorder"), name)
+        val f = File(File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), Saver.DIR), name)
         return if (f.exists()) f.absolutePath else null
     }
 
     fun enqueue(ctx: Context, job: Job) {
+        if (BuildConfig.LAB) return   // 실험판: 정리·변환 안 함 (받기만 시험)
         if (!job.name.lowercase().endsWith(".mp4")) {
             // .ts는 목차 없이도 잘 재생돼 정리 없이 바로 업로드
             Uploader.enqueue(ctx, job.name, job.path, job.streamer)

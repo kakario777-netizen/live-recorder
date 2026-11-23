@@ -219,10 +219,13 @@ class Slot(
                 if (kind == "hls") playlistAt = System.currentTimeMillis()
                 if (kind == "hls" && req.method.equals("GET", true) && !url.contains("_HLS_msn")) {
                     pinBestQuality(url, req)?.let { return it }
+                    if (Lab.wantPlaylist(id)) labPlaylist(url, req)?.let { return it }
                     return null
                 }
+                if (kind == "hls" && req.method.equals("GET", true) && Lab.wantPlaylist(id)) labPlaylist(url, req)?.let { return it }
                 if (kind != "seg") return null
                 val c = Captured(url, "seg", req.requestHeaders ?: emptyMap(), pageUrl)
+                if (Lab.on) Lab.onSegment(id, streamer.ifEmpty { host }, url, req.requestHeaders ?: emptyMap())
                 // 한 번만 받기: 앱이 대신 받아서 저장용으로 보관하고, 같은 데이터를 재생기에도 넘겨준다
                 if (req.method.equals("GET", true) && !req.requestHeaders.keys.any { it.equals("Range", true) }) {
                     try {
@@ -421,12 +424,30 @@ class Slot(
      * 화질 고정: 재생기가 받는 '화질 목록'에서 가장 좋은 화질 하나만 남겨서 넘긴다.
      * 재생기가 고를 게 없으니 240p·480p로 왔다 갔다 하지 않는다. (흐린 화면 목록은 건드리지 않음)
      */
+    /** 실험판: 방송 목록(m3u8) 원본을 앱이 대신 받아 남기고 재생기에 그대로 넘겨줌 */
+    private fun labPlaylist(url: String, req: WebResourceRequest): WebResourceResponse? = try {
+        val c = Captured(url, "hls", req.requestHeaders ?: emptyMap(), pageUrl)
+        val r = Net.get(url, c, ua, timeoutMs = 15000, maxBytes = 2 * 1024 * 1024)
+        if (r.code !in 200..299) null else {
+            val text = String(r.body)
+            if (text.contains("#EXT-X-STREAM-INF")) Lab.onMaster(id, streamer.ifEmpty { host }, url, text)
+            else Lab.onPlaylist(id, streamer.ifEmpty { host }, url, req.requestHeaders ?: emptyMap(), text)
+            val hs = HashMap<String, String>()
+            r.headers.forEach { (k, v) -> val lk = k.lowercase(); if (lk.startsWith("access-control") || lk == "cache-control") hs[k] = v }
+            if (hs.keys.none { it.equals("Access-Control-Allow-Origin", true) }) req.requestHeaders.entries.firstOrNull { it.key.equals("Origin", true) }?.let {
+                hs["Access-Control-Allow-Origin"] = it.value; hs["Access-Control-Allow-Credentials"] = "true"
+            }
+            WebResourceResponse("application/vnd.apple.mpegurl", null, 200, "OK", hs, java.io.ByteArrayInputStream(r.body))
+        }
+    } catch (_: Exception) { null }
+
     private fun pinBestQuality(url: String, req: WebResourceRequest): WebResourceResponse? {
         return try {
             val c = Captured(url, "hls", req.requestHeaders ?: emptyMap(), pageUrl)
             val r = Net.get(url, c, ua, timeoutMs = 15000, maxBytes = 2 * 1024 * 1024)
             if (r.code !in 200..299) return null
             var text = String(r.body)
+            if (Lab.on && text.contains("#EXT-X-STREAM-INF")) Lab.onMaster(id, streamer.ifEmpty { host }, url, text)
             if (text.contains("#EXT-X-STREAM-INF")) {
                 val lines = text.lines()
                 data class V(val inf: String, val uri: String, val bw: Long, val blurred: Boolean)
@@ -680,7 +701,7 @@ class Slot(
     private fun openFile(ext: String): OutputStream {
         var base = Names.build(ctx, pageUrl, streamer)
         // 같은 이름이 이미 있으면 (2), (3)…
-        val dir = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), "LiveRecorder")
+        val dir = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), Saver.DIR)
         var n = 2
         val first = base
         while (java.io.File(dir, "$base.$ext").exists()) { base = "$first ($n)"; n++ }

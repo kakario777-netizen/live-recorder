@@ -3,12 +3,17 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// 실험판(LAB=1): 원래 앱과 따로 설치되는 테스트용 (이름·저장 폴더·업데이트도 따로)
+val lab = System.getenv("LAB") == "1"
+
 android {
     namespace = "com.kakario.liverecorder"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.kakario.liverecorder"
+        applicationId = if (lab) "com.kakario.liverecorder.lab" else "com.kakario.liverecorder"
+        resValue("string", "app_name", if (lab) "라이브 녹화 실험" else "라이브 녹화")
+        buildConfigField("boolean", "LAB", lab.toString())
         minSdk = 29
         targetSdk = 35
         // GitHub 자동 빌드 번호를 버전으로 사용 (새 APK가 기존 앱 위에 업데이트되도록)
@@ -31,6 +36,8 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    buildFeatures { buildConfig = true }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

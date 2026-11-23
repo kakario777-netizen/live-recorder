@@ -8,7 +8,9 @@ import java.io.OutputStream
 
 /** 내 파일 > 다운로드 > LiveRecorder 폴더에 저장 */
 object Saver {
-    const val FOLDER = "Download/LiveRecorder"
+    /** 저장 폴더 이름 (실험판은 따로) */
+    val DIR = if (BuildConfig.LAB) "LiveRecorderLab" else "LiveRecorder"
+    val FOLDER = "Download/$DIR"
 
     fun create(ctx: Context, name: String, mime: String): Pair<Uri, OutputStream> {
         val v = ContentValues().apply {
@@ -30,7 +32,7 @@ object Saver {
      */
     fun createLive(ctx: Context, name: String, mime: String): Triple<Uri?, String?, OutputStream> {
         return try {
-            val dir = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), "LiveRecorder")
+            val dir = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), DIR)
             dir.mkdirs()
             val f = java.io.File(dir, name)
             val out = java.io.FileOutputStream(f)

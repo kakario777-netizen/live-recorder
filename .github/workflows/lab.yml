@@ -1,0 +1,54 @@
+name: Build LAB APK
+
+on:
+  push:
+    branches: [lab]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-lab
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.11.1
+
+
+      - name: Build debug APK
+        run: |
+          set -o pipefail
+          LAB=1 gradle assembleDebug --no-daemon 2>&1 | tee build.log
+        # 빌드가 실패하면 오류 줄만 골라 요약 표시(annotation)로 남긴다 — 채팅에서 원인을 바로 볼 수 있게
+      - name: Report build errors
+        if: failure()
+        run: |
+          grep -E "^e: |error:|What went wrong|FAILURE|Unresolved|Exception" build.log | head -60 > errors.txt || true
+          msg=$(sed 's/%/%25/g' errors.txt | sed ':a;N;$!ba;s/\n/%0A/g')
+          echo "::error title=build-errors::${msg}"
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk live-recorder-lab.apk
+
+      - name: Publish to Releases (lab)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete lab --yes --cleanup-tag || true
+          gh release create lab live-recorder-lab.apk --prerelease --latest=false \
+            --title "실험판 #${{ github.run_number }} (따로 설치되는 테스트용)" \
+            --notes "$(printf '라이브 녹화 실험판입니다. 원래 앱과 따로 설치돼요.\n\n변경 내용:\n%s' "$(git log -1 --pretty=%B | grep -v -e '^Co-Authored-By' -e '^Claude-Session')")" \
+            --target ${{ github.sha }}

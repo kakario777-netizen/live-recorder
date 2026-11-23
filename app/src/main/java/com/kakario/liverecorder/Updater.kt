@@ -35,8 +35,9 @@ class Updater(private val a: Activity) {
     var readyApk: File? = null; private set
 
     companion object {
-        const val API = "https://api.github.com/repos/kakario777-netizen/live-recorder/releases/tags/latest"
-        const val PAGE = "https://github.com/kakario777-netizen/live-recorder/releases/tag/latest"
+        private val TAG = if (BuildConfig.LAB) "lab" else "latest"
+        val API = "https://api.github.com/repos/kakario777-netizen/live-recorder/releases/tags/$TAG"
+        val PAGE = "https://github.com/kakario777-netizen/live-recorder/releases/tag/$TAG"
 
         fun working() = RecordService.running || ConvertService.current != null
     }
