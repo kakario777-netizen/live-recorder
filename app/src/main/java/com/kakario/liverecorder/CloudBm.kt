@@ -90,7 +90,15 @@ object CloudBm {
             val remote = r.optString("data").takeIf { it.startsWith("{") }?.let { JSONObject(it) }
             val remoteB = remote?.optJSONArray("b")?.let { runCatching { Bookmarks.fromJson(it) }.getOrNull() } ?: emptyList()
             val remoteC = remote?.optJSONArray("c")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
-            val merged = if (r.optBoolean("same")) local else Bookmarks.merge(local, remoteB)
+            var merged = if (r.optBoolean("same")) local else Bookmarks.merge(local, remoteB)
+            // 다른 폰에서 새로 들어온 즐겨찾기는 녹화 맡은 폰에서 바로 '생방 대기'로
+            val had = local.map { it.url }.toSet()
+            val fresh = merged.filter { !it.del && !it.watch && it.url !in had }.map { it.url }.toSet()
+            if (fresh.isNotEmpty() && recordHere(ctx)) {
+                merged = merged.map { if (it.url in fresh) Bookmarks.Item(it.name, it.url, System.currentTimeMillis(), it.del, it.cat, true) else it }
+                RecordService.addLog("다른 폰에서 온 즐겨찾기 ${fresh.size}개 → 생방 대기로 등록")
+                if (RecordService.instance != null) Watcher.start(ctx) else RecordService.startWatch(ctx)
+            }
             val cats = (Bookmarks.cats(ctx) + remoteC).distinct()
             Bookmarks.saveAll(ctx, merged)
             Bookmarks.setCats(ctx, cats)
