@@ -100,8 +100,9 @@ object Tidy {
 
     private fun onPowerDisconnected(ctx: Context) {
         val job = current ?: return
-        if (!converting) return
-        RecordService.addLog("충전기가 빠져서 변환 멈춤 → 다시 꽂으면 처음부터 변환: ${job.name}")
+        if (!converting || job.force) return
+        if (charging(ctx)) return   // 충전기를 뽑아도 배터리 80% 이상이면 계속 변환
+        RecordService.addLog("배터리 80% 아래 + 충전기 없음 → 변환 멈춤 (충전기를 꽂으면 처음부터 다시 변환): ${job.name}")
         handler?.post {
             try { transformer?.cancel() } catch (_: Exception) {}
             transformer = null
@@ -130,12 +131,16 @@ object Tidy {
     fun autoH265(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("autoH265", true)
 
     /**
-     * 충전기가 꽂혀 있는지 — '충전 중'이 아니라 '꽂혀 있음'으로 판단.
-     * (배터리 보호 85%·100% 완충이면 꽂혀 있어도 충전이 멈춰서 '충전 중 아님'으로 나오기 때문)
+     * 변환해도 되는지: 배터리 80% 이상이거나 충전기가 꽂혀 있으면 OK.
+     * (100% 완충·배터리 보호 85%면 꽂혀 있어도 '충전 중 아님'으로 나오는 문제 대비)
      */
     private fun charging(ctx: Context): Boolean {
-        val i = ctx.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
-        return (i?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+        val i = ctx.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)) ?: return true
+        val plugged = i.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) != 0
+        val level = i.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+        val scale = i.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100).coerceAtLeast(1)
+        val pct = if (level < 0) 100 else level * 100 / scale
+        return plugged || pct >= 80
     }
 
     /** 파일 목록 '지금 변환': 충전과 상관없이 바로 변환 */
@@ -154,7 +159,10 @@ object Tidy {
     private val chargeCheck = object : Runnable {
         override fun run() {
             val ctx = appCtx ?: return
-            if (synchronized(queue) { waitCharge.isNotEmpty() } && charging(ctx)) onPowerConnected(ctx)
+            val ok = charging(ctx)
+            if (synchronized(queue) { waitCharge.isNotEmpty() } && ok) onPowerConnected(ctx)
+            // 변환 중인데 80% 아래로 떨어졌고 충전기도 없으면 멈춤
+            if (!ok && converting && current?.force != true) onPowerDisconnected(ctx)
             handler?.postDelayed(this, 60_000)
         }
     }
@@ -240,7 +248,7 @@ object Tidy {
             converting = false
             dedupUsed?.delete(); dedupUsed = null
             synchronized(queue) { waitCharge.add(job) }
-            RecordService.addLog("H.264라 충전기를 꽂으면 H.265로 변환해서 올려요 (충전 대기): ${job.name}")
+            RecordService.addLog("H.264인데 배터리 80% 아래·충전기 없음 → 충전 대기 (꽂거나 80% 넘으면 변환 후 업로드): ${job.name}")
             current = null
             persist()
             onChange?.invoke()
