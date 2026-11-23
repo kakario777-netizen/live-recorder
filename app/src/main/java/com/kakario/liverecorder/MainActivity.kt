@@ -1052,14 +1052,30 @@ class MainActivity : Activity() {
         val h = android.os.Handler(android.os.Looper.getMainLooper())
         val dlg = AlertDialog.Builder(this).setTitle("녹화폰 현황").setMessage(body())
             .setPositiveButton("지금 새로고침", null).setNegativeButton("닫기", null).create()
+        var nextAt = 0L
         val tick = object : Runnable {
-            override fun run() { if (!dlg.isShowing) return; CloudBm.askStatus(this@MainActivity); h.postDelayed(this, 60_000) }
+            override fun run() { if (!dlg.isShowing) return; CloudBm.askStatus(this@MainActivity); nextAt = System.currentTimeMillis() + 60_000; h.postDelayed(this, 60_000) }
+        }
+        // 제목 옆 작은 숫자: 다음 확인까지 남은 초
+        val count = object : Runnable {
+            override fun run() {
+                if (!dlg.isShowing) return
+                val left = ((nextAt - System.currentTimeMillis()) / 1000).coerceAtLeast(0)
+                dlg.setTitle(android.text.SpannableString("녹화폰 현황   ${left}초 뒤 갱신").apply {
+                    setSpan(android.text.style.RelativeSizeSpan(0.6f), 6, length, 0)
+                    setSpan(android.text.style.ForegroundColorSpan(Color.GRAY), 6, length, 0)
+                })
+                h.postDelayed(this, 1000)
+            }
         }
         Push.onStatus = { _ -> runOnUiThread { if (dlg.isShowing) dlg.setMessage(body()) } }
-        dlg.setOnDismissListener { Push.onStatus = null; h.removeCallbacks(tick) }
+        dlg.setOnDismissListener { Push.onStatus = null; h.removeCallbacks(tick); h.removeCallbacks(count) }
         dlg.show()
-        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { CloudBm.askStatus(this); Toast.makeText(this, "물어보는 중…", Toast.LENGTH_SHORT).show() }
-        h.post(tick)
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            h.removeCallbacks(tick); h.post(tick)   // 지금 묻고 1분 카운트 다시
+            Toast.makeText(this, "물어보는 중…", Toast.LENGTH_SHORT).show()
+        }
+        h.post(tick); h.post(count)
     }
 
     /** 폰 역할 · 즐겨찾기 맞추기 (메인 계정 드라이브) · 녹화폰 알림 */
