@@ -32,7 +32,7 @@ object CloudBm {
     fun setUrl(ctx: Context, u: String) = prefs(ctx).edit().putString("url", u.trim()).putLong("ver", 0).putBoolean("dirty", true).apply()
     /** 녹화폰(true): 생방 대기 녹화 + 원격폰에 알림 보냄 / 원격폰(false): 즐겨찾기만 맞추고 알림을 받음 */
     fun recordHere(ctx: Context) = prefs(ctx).getBoolean("recordHere", true)
-    fun setRecordHere(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("recordHere", on).apply()
+    fun setRecordHere(ctx: Context, on: Boolean) { if (on != recordHere(ctx)) prefs(ctx).edit().putBoolean("recordHere", on).putLong("ver", 0).putBoolean("dirty", false).apply() }
 
     @Volatile var lastResult = ""; private set
 
@@ -43,7 +43,11 @@ object CloudBm {
     fun notifyOn(ctx: Context) = prefs(ctx).getBoolean("notify", true)
     /** 원격폰 뷰어 모드: 이 폰은 녹화 안 함 (녹화 버튼은 녹화폰에 부탁) */
     fun viewer(ctx: Context) = !recordHere(ctx) && prefs(ctx).getBoolean("viewer", true)
-    fun setViewer(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("viewer", on).apply()
+    fun setViewer(ctx: Context, on: Boolean) { if (on != prefs(ctx).getBoolean("viewer", true)) prefs(ctx).edit().putBoolean("viewer", on).putLong("ver", 0).putBoolean("dirty", false).apply() }
+    /** 뷰어 모드는 녹화폰 거울 값을 따로 씀 (이 폰 값은 그대로 보관) */
+    fun chatKey(ctx: Context) = if (viewer(ctx)) "v_chatKoreanOnly" else "chatKoreanOnly"
+    private fun qtKey(ctx: Context) = if (viewer(ctx)) "v_qt" else "qt"
+    private fun stKey(ctx: Context) = if (viewer(ctx)) "v_st" else "st"
 
     /** 원격폰(뷰어) → 녹화폰: 이 방송 녹화해 줘 */
     fun requestRecord(ctx: Context, url: String, name: String) {
@@ -129,11 +133,12 @@ object CloudBm {
 
     /** 이 폰에서 즐겨찾기가 바뀜 → 곧 올림 */
     /** 화질·설정을 이 폰에서 바꿈 → 시각 기록 후 올림 */
-    fun qualityChanged(ctx: Context) { prefs(ctx).edit().putLong("qt", System.currentTimeMillis()).apply(); changed(ctx) }
-    fun settingsChanged(ctx: Context) { prefs(ctx).edit().putLong("st", System.currentTimeMillis()).apply(); changed(ctx) }
+    fun qualityChanged(ctx: Context) { prefs(ctx).edit().putLong(qtKey(ctx), System.currentTimeMillis()).apply(); changed(ctx) }
+    fun settingsChanged(ctx: Context) { prefs(ctx).edit().putLong(stKey(ctx), System.currentTimeMillis()).apply(); changed(ctx) }
 
     fun changed(ctx: Context) {
         if (!on(ctx)) return
+        if (!recordHere(ctx) && !viewer(ctx)) return   // 다운로드 모드: 이 폰 변경은 올리지 않음
         prefs(ctx).edit().putBoolean("dirty", true).apply()
         val app = ctx.applicationContext
         Thread { Thread.sleep(800); sync(app) }.start()
@@ -175,67 +180,62 @@ object CloudBm {
         val base = url(ctx)
         if (!on(ctx)) return "구글 주소가 없어요"
         val p = prefs(ctx)
-        val dirty = p.getBoolean("dirty", false)
+        val viewer = viewer(ctx)
+        val download = !recordHere(ctx) && !viewer
+        val dirty = p.getBoolean("dirty", false) && !download
         try {
             val ver = p.getLong("ver", 0)
             val r = get("$base?v=$ver")
             val remoteVer = r.optLong("ver", 0)
             if (r.optBoolean("same") && !dirty) { lastResult = "최신 상태"; return lastResult }
+            // 즐겨찾기 저장 위치: 뷰어 모드면 '녹화폰 거울'(따로 보관), 아니면 이 폰 것
             val local = Bookmarks.all(ctx)
             val remote = r.optString("data").takeIf { it.startsWith("{") }?.let { JSONObject(it) }
             val remoteB = remote?.optJSONArray("b")?.let { runCatching { Bookmarks.fromJson(it) }.getOrNull() } ?: emptyList()
             val remoteC = remote?.optJSONArray("c")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
-            // 자동 켬/끔(생방 대기): 녹화폰 ↔ 뷰어는 같이 맞춤, 다운로드 모드 원격폰은 자기 것만 따로
-            val download = !recordHere(ctx) && !viewer(ctx)
-            val myWatch = local.filter { it.watch }.map { it.url }.toSet()
-            val remoteW = remoteB.associate { it.url to it.watch }
-            val firstViewer = viewer(ctx) && !p.getBoolean("viewerInit", false)
-            var merged = (if (r.optBoolean("same")) local else Bookmarks.merge(local, remoteB)).map {
-                val w = when {
-                    download -> it.url in myWatch
-                    firstViewer -> remoteW[it.url] ?: false     // 처음 뷰어로 바꿀 때는 녹화폰 기준으로
-                    else -> it.watch
+
+            if (download) {
+                // 다운로드 모드: 녹화폰 즐겨찾기를 이 폰에 '복사만' (새로 생긴 것만 더함, 올리지 않음)
+                val have = local.map { it.url }.toSet()
+                val add = remoteB.filter { !it.del && it.url !in have }.map { Bookmarks.Item(it.name, it.url, it.t, false, it.cat, false) }
+                if (add.isNotEmpty()) {
+                    Bookmarks.saveAll(ctx, local + add)
+                    Bookmarks.setCats(ctx, (Bookmarks.cats(ctx) + remoteC).distinct())
+                    RecordService.addLog("녹화폰 즐겨찾기 ${add.size}개를 이 폰에 복사")
                 }
-                if (w == it.watch) it else Bookmarks.Item(it.name, it.url, it.t, it.del, it.cat, w)
+                p.edit().putLong("ver", remoteVer).putBoolean("dirty", false).apply()
+                lastResult = "녹화폰 즐겨찾기 복사 완료 (${add.size}개 추가)"
+                return lastResult
             }
-            if (firstViewer) p.edit().putBoolean("viewerInit", true).apply()
-            if (!viewer(ctx)) p.edit().putBoolean("viewerInit", false).apply()
-            // 다른 폰에서 새로 들어온 즐겨찾기는 녹화폰에서 바로 '생방 대기'로 (원격폰은 따로 녹화하므로 그대로)
+
+            var merged = if (r.optBoolean("same")) local else Bookmarks.merge(local, remoteB)
+            // 녹화폰: 뷰어에서 새로 들어온 즐겨찾기는 바로 '생방 대기'로
             val had = local.map { it.url }.toSet()
             val fresh = merged.filter { !it.del && !it.watch && it.url !in had }.map { it.url }.toSet()
-            if (fresh.isNotEmpty() && recordHere(ctx)) {
+            if (!viewer && fresh.isNotEmpty() && local.isNotEmpty()) {
                 merged = merged.map { if (it.url in fresh) Bookmarks.Item(it.name, it.url, System.currentTimeMillis(), it.del, it.cat, true) else it }
-                RecordService.addLog("다른 폰에서 온 즐겨찾기 ${fresh.size}개 → 생방 대기로 등록")
-                if (RecordService.instance != null) Watcher.start(ctx) else RecordService.startWatch(ctx)
+                RecordService.addLog("뷰어에서 온 즐겨찾기 ${fresh.size}개 → 생방 대기로 등록")
             }
             val cats = (Bookmarks.cats(ctx) + remoteC).distinct()
             Bookmarks.saveAll(ctx, merged)
             Bookmarks.setCats(ctx, cats)
-            // 화질(방송별)·채팅 설정: 녹화폰 ↔ 뷰어는 더 최근에 바꾼 쪽으로 맞춤
-            val sharedOk = !download
-            val rq = remote?.optJSONObject("q"); val rqt = remote?.optLong("qt") ?: 0L
-            if (sharedOk && rq != null && rqt > p.getLong("qt", 0)) {
-                rq.keys().forEach { u -> Quality.setPerUrlQuiet(ctx, u, rq.optInt(u)) }
-                p.edit().putLong("qt", rqt).apply()
-            }
+            if (!viewer && Watcher.any(ctx)) { if (RecordService.instance != null) Watcher.start(ctx) else RecordService.startWatch(ctx) }
+
+            // 채팅 설정: 녹화폰 ↔ 뷰어, 더 최근에 바꾼 쪽으로 (화질은 녹화폰 자기 설정대로)
             val rs = remote?.optJSONObject("s"); val rst = remote?.optLong("st") ?: 0L
-            if (sharedOk && rs != null && rst > p.getLong("st", 0)) {
-                ctx.getSharedPreferences("main", Context.MODE_PRIVATE).edit().putBoolean("chatKoreanOnly", rs.optBoolean("chatKoreanOnly", true)).apply()
-                p.edit().putLong("st", rst).apply()
+            if (rs != null && rst > p.getLong(stKey(ctx), 0)) {
+                ctx.getSharedPreferences("main", Context.MODE_PRIVATE).edit().putBoolean(chatKey(ctx), rs.optBoolean("chatKoreanOnly", true)).apply()
+                p.edit().putLong(stKey(ctx), rst).apply()
             }
-            val qOut = if (sharedOk) JSONObject().also { q -> merged.filter { !it.del }.forEach { b -> Quality.perUrl(ctx, b.url).takeIf { it > 0 }?.let { q.put(b.url, it) } } } else (rq ?: JSONObject())
-            val sOut = if (sharedOk) JSONObject().put("chatKoreanOnly", ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("chatKoreanOnly", true)) else (rs ?: JSONObject())
-            val bOut = merged.map { if (download) Bookmarks.Item(it.name, it.url, it.t, it.del, it.cat, remoteW[it.url] ?: false) else it }
-            val out = JSONObject().put("b", Bookmarks.toJson(bOut)).put("c", JSONArray(cats))
-                .put("q", qOut).put("qt", if (sharedOk) maxOf(p.getLong("qt", 0), rqt) else rqt)
-                .put("s", sOut).put("st", if (sharedOk) maxOf(p.getLong("st", 0), rst) else rst).toString()
+            val sOut = JSONObject().put("chatKoreanOnly", ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean(chatKey(ctx), true))
+            val out = JSONObject().put("b", Bookmarks.toJson(merged)).put("c", JSONArray(cats))
+                .put("s", sOut).put("st", maxOf(p.getLong(stKey(ctx), 0), rst)).toString()
             var newVer = remoteVer
             if (dirty || remote == null || out != remote.toString()) {
                 newVer = post(base, out).optLong("ver", remoteVer)
             }
             p.edit().putLong("ver", newVer).putBoolean("dirty", false).apply()
             lastResult = "맞춤 완료 (즐겨찾기 ${merged.count { !it.del }}개)"
-            if (!r.optBoolean("same") && remote != null && dirty.not()) RecordService.addLog("다른 폰에서 바뀐 즐겨찾기를 받아 옴 (${merged.count { !it.del }}개)")
         } catch (e: Exception) {
             lastResult = "맞추기 실패: ${e.message ?: e.javaClass.simpleName}"
         }

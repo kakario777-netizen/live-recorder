@@ -47,6 +47,10 @@ class BookmarksActivity : Activity() {
         cur = getSharedPreferences("main", MODE_PRIVATE).getString("bmLastCat", ALL) ?: ALL
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE) }
         root.setOnApplyWindowInsetsListener { v, ins -> v.setPadding(0, ins.systemWindowInsetTop, 0, ins.systemWindowInsetBottom); ins }
+        if (CloudBm.viewer(this)) root.addView(TextView(this).apply {
+            text = "뷰어 · 녹화폰 즐겨찾기를 보는 중 (여기서 바꾸면 녹화폰에 적용)"; textSize = 12f; setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#1565C0")); setPadding(dp(14), dp(6), dp(14), dp(6))
+        })
 
         // 맨 위: 제목 + 폴더 만들기 + 닫기
         val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(14), dp(8), dp(6), dp(4)) }
@@ -251,13 +255,13 @@ class BookmarksActivity : Activity() {
     }
 
     private fun itemMenu(b: Bookmarks.Item) {
-        AlertDialog.Builder(this).setTitle(b.name)
+        AlertDialog.Builder(this).setTitle(if (CloudBm.viewer(this)) "${b.name} (녹화폰)" else b.name)
             .setItems(arrayOf("이름 바꾸기", "폴더 옮기기" + (if (b.cat.isNotEmpty()) " (지금: ${b.cat})" else ""),
                 "화질 고르기 (지금: ${Quality.label(Quality.perUrl(this, b.url))})", "삭제")) { _, i ->
                 when (i) {
                     0 -> input("이름 바꾸기", b.name, "저장") { n -> Bookmarks.rename(this, b.url, n.ifEmpty { b.name }); render() }
                     1 -> moveFolder(b)
-                    2 -> pickQuality(b)
+                    2 -> if (CloudBm.viewer(this)) Toast.makeText(this, "뷰어 모드: 화질은 녹화폰 설정대로 받아요", Toast.LENGTH_SHORT).show() else pickQuality(b)
                     3 -> AlertDialog.Builder(this).setMessage("'${b.name}' 즐겨찾기를 지울까요?")
                         .setPositiveButton("삭제") { _, _ -> Bookmarks.remove(this, b.url); render() }
                         .setNegativeButton("취소", null).show()

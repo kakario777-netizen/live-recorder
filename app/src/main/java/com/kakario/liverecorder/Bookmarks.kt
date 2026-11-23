@@ -17,7 +17,13 @@ object Bookmarks {
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
 
     /** 삭제 표시까지 포함한 전체 (동기화용) */
-    fun all(ctx: Context): List<Item> = try { fromJson(JSONArray(prefs(ctx).getString("bookmarks", "[]"))) } catch (e: Exception) { emptyList() }
+    /** 뷰어 모드면 '녹화폰 거울'을 따로 씀 (이 폰 즐겨찾기는 그대로 보관) */
+    private fun bk(ctx: Context) = if (CloudBm.viewer(ctx)) "v_bookmarks" else "bookmarks"
+    private fun ck(ctx: Context) = if (CloudBm.viewer(ctx)) "v_bmCats" else "bmCats"
+
+    fun all(ctx: Context): List<Item> = try { fromJson(JSONArray(prefs(ctx).getString(bk(ctx), "[]"))) } catch (e: Exception) { emptyList() }
+    /** 이 폰 자체 즐겨찾기 (뷰어 모드여도 이 폰 생방 대기는 뒤에서 계속) */
+    fun localList(ctx: Context): List<Item> = try { fromJson(JSONArray(prefs(ctx).getString("bookmarks", "[]"))) } catch (e: Exception) { emptyList() }.filter { !it.del }
 
     fun list(ctx: Context): List<Item> = all(ctx).filter { !it.del }
 
@@ -33,7 +39,7 @@ object Bookmarks {
     }
 
     fun saveAll(ctx: Context, l: List<Item>) {
-        prefs(ctx).edit().putString("bookmarks", toJson(l).toString()).apply()
+        prefs(ctx).edit().putString(bk(ctx), toJson(l).toString()).apply()
     }
 
     /** 두 목록 합치기: 주소마다 더 최근에 바뀐 쪽을 따름 (삭제도 포함) */
@@ -67,16 +73,16 @@ object Bookmarks {
     // ---------- 폴더 ----------
     /** 폴더 목록 (비어 있는 폴더도 유지). 항목에만 있는 폴더도 합침 */
     fun cats(ctx: Context): List<String> {
-        val saved = try { JSONArray(prefs(ctx).getString("bmCats", "[]")).let { a -> (0 until a.length()).map { a.getString(it) } } } catch (e: Exception) { emptyList() }
+        val saved = try { JSONArray(prefs(ctx).getString(ck(ctx), "[]")).let { a -> (0 until a.length()).map { a.getString(it) } } } catch (e: Exception) { emptyList() }
         return (saved + list(ctx).map { it.cat }.filter { it.isNotEmpty() }).distinct()
     }
     private fun saveCats(ctx: Context, l: List<String>) {
-        prefs(ctx).edit().putString("bmCats", JSONArray(l.distinct()).toString()).apply()
+        prefs(ctx).edit().putString(ck(ctx), JSONArray(l.distinct()).toString()).apply()
         CloudBm.changed(ctx)
     }
 
     /** 다른 폰에서 받은 폴더 목록 저장 (다시 올리지 않음) */
-    fun setCats(ctx: Context, l: List<String>) = prefs(ctx).edit().putString("bmCats", JSONArray(l.distinct()).toString()).apply()
+    fun setCats(ctx: Context, l: List<String>) = prefs(ctx).edit().putString(ck(ctx), JSONArray(l.distinct()).toString()).apply()
     fun addCat(ctx: Context, name: String) { if (name.isNotBlank()) saveCats(ctx, cats(ctx) + name.trim()) }
 
     fun renameCat(ctx: Context, old: String, new: String) {
