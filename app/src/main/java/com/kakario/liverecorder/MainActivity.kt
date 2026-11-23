@@ -567,6 +567,8 @@ class MainActivity : Activity() {
 
     /** 녹화 현황: 칸마다 상태와 중지 버튼, 아래에 '이 방송 추가' */
     private fun showSlots() {
+        // 뷰어 모드: 이 폰은 녹화를 안 하니 '녹화 현황'은 녹화폰 현황으로
+        if (CloudBm.viewer(this)) { askRecorderStatus(); return }
         startActivityForResult(Intent(this, StatusActivity::class.java), StatusActivity.REQ)
     }
 
