@@ -278,7 +278,8 @@ object Uploader {
         val src = File(job.path)
         if (!src.exists()) throw Exception("원본 파일이 없어요")
         val total = src.length()
-        val folderName = Names.clean(job.streamer).ifEmpty { "기타" }
+        // 스트리머 정보가 빠진 채 들어온 파일(직접 정리·직접 변환 등)은 파일 이름에서 꺼냄
+        val folderName = Names.clean(job.streamer).ifEmpty { Names.streamerFromFileName(job.name) }.ifEmpty { "기타" }
         val dir = FtpConfig.folder(ctx).trimEnd('/') + "/" + folderName
         val finalPath = "$dir/${job.name}"
         val partPath = "$finalPath.part"

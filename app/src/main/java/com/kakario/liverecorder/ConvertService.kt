@@ -190,7 +190,7 @@ class ConvertService : Service() {
                 Saver.scan(this, dst.absolutePath)
                 Tidy.markTidied(this, dst.name)
                 msg = "완료: ${dst.name} (${before}MB → ${after}MB, 원본은 휴지통 7일)"
-                Uploader.enqueue(this, dst.name, dst.absolutePath, "")
+                Uploader.enqueue(this, dst.name, dst.absolutePath, Names.streamerFromFileName(dst.name))
             } else {
                 // 직접 경로를 모르는 파일: 옆에 새 파일로 저장 (원본은 그대로)
                 val name = job.name.substringBeforeLast('.') + "_h265.mp4"

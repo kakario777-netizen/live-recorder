@@ -33,6 +33,21 @@ object Names {
         return clean(x)
     }
 
+    private val knownSites = setOf("stripchat", "chaturbate", "bongacams", "cam4", "camsoda", "myfreecams", "flirt4free",
+        "soop", "sooplive", "afreecatv", "chzzk", "naver", "twitch", "youtube", "kick", "pandalive", "pandatv", "tiktok", "liveme")
+
+    /**
+     * 파일 이름에서 스트리머 이름 꺼내기 (스트리머 정보가 빠진 채 넘어온 경우용)
+     * "stripchat soonilove_ 20261123 094439 (티켓방 흐림) (H.264 원본).mp4" → "soonilove_"
+     */
+    fun streamerFromFileName(name: String): String {
+        val base = name.substringBeforeLast('.').replace(Regex("""\([^)]*\)"""), " ")
+        val t = base.split(' ').filter { it.isNotEmpty() && !it.all { c -> c.isDigit() } }.toMutableList()
+        if (t.isNotEmpty() && t[0].lowercase() in knownSites) t.removeAt(0)
+        else if (t.size >= 2) t.removeAt(0)   // 맨 앞은 사이트명
+        return clean(t.joinToString(" "))
+    }
+
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
     fun useSite(ctx: Context) = prefs(ctx).getBoolean("nameSite", true)
     fun useStreamer(ctx: Context) = prefs(ctx).getBoolean("nameStreamer", true)

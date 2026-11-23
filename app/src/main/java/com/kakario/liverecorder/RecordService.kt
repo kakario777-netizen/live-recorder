@@ -321,7 +321,7 @@ class RecordService : Service() {
                 ensureForeground()
                 val name = intent.getStringExtra("name") ?: return START_STICKY
                 val uri = intent.getStringExtra("uri")?.let { android.net.Uri.parse(it) }
-                Tidy.enqueue(this, Tidy.Job(name, Tidy.pathFor(name), uri))
+                Tidy.enqueue(this, Tidy.Job(name, Tidy.pathFor(name), uri, Names.streamerFromFileName(name)))
                 return START_STICKY
             }
             ACTION_RESUME -> {
