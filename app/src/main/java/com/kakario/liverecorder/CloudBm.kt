@@ -180,6 +180,12 @@ object CloudBm {
         val base = url(ctx)
         if (!on(ctx)) return "구글 주소가 없어요"
         val p = prefs(ctx)
+        // 원격폰: 예전 판 동기화로 녹화폰의 자동 켬이 이 폰에 섞여 들어옴 → 한 번 모두 끔 (이 폰은 자동 다운 안 함)
+        if (!recordHere(ctx) && !p.getBoolean("localWatchReset", false)) {
+            val n = Bookmarks.clearLocalWatch(ctx)
+            p.edit().putBoolean("localWatchReset", true).apply()
+            if (n > 0) RecordService.addLog("원격폰: 섞여 들어온 자동 켬 ${n}개를 껐어요 (이 폰은 자동 다운 안 함)")
+        }
         val viewer = viewer(ctx)
         val download = !recordHere(ctx) && !viewer
         // 예전 판은 자동 켬/끔을 빼고 올렸음 → 이번 판에서 녹화폰이 한 번 다시 올림

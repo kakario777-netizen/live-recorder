@@ -22,6 +22,13 @@ object Bookmarks {
     private fun ck(ctx: Context) = if (CloudBm.viewer(ctx)) "v_bmCats" else "bmCats"
 
     fun all(ctx: Context): List<Item> = try { fromJson(JSONArray(prefs(ctx).getString(bk(ctx), "[]"))) } catch (e: Exception) { emptyList() }
+    /** 이 폰 자체 즐겨찾기의 자동 켬을 모두 끔 (예전 동기화로 녹화폰 표시가 섞여 들어온 원격폰 정리용) */
+    fun clearLocalWatch(ctx: Context): Int {
+        val l = try { fromJson(JSONArray(prefs(ctx).getString("bookmarks", "[]"))) } catch (e: Exception) { return 0 }
+        val n = l.count { it.watch && !it.del }
+        prefs(ctx).edit().putString("bookmarks", toJson(l.map { Item(it.name, it.url, it.t, it.del, it.cat, false) }).toString()).apply()
+        return n
+    }
     /** 이 폰 자체 즐겨찾기 (뷰어 모드여도 이 폰 생방 대기는 뒤에서 계속) */
     fun localList(ctx: Context): List<Item> = try { fromJson(JSONArray(prefs(ctx).getString("bookmarks", "[]"))) } catch (e: Exception) { emptyList() }.filter { !it.del }
 
