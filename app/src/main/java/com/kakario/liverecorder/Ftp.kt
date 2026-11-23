@@ -170,6 +170,39 @@ object Uploader {
         }
     }
 
+    /** 업로드 완료 기록 (파일 목록에 남겨 보여 줌) */
+    class Hist(val name: String, val size: Long, val time: Long, val dir: String)
+
+    private fun addHistory(ctx: Context, job: Job) {
+        val p = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
+        synchronized(this) {
+            val a = try { org.json.JSONArray(p.getString("uploadHistory", "[]")) } catch (e: Exception) { org.json.JSONArray() }
+            val folderName = Names.clean(job.streamer).ifEmpty { Names.streamerFromFileName(job.name) }.ifEmpty { "기타" }
+            val size = try { File(job.path).takeIf { it.exists() }?.length() ?: File(trashDir(), File(job.path).name).length() } catch (e: Exception) { 0L }
+            a.put(JSONObject().put("name", job.name).put("size", size).put("time", System.currentTimeMillis())
+                .put("dir", FtpConfig.folder(ctx).trimEnd('/') + "/" + folderName))
+            val out = org.json.JSONArray()
+            val from = (a.length() - 3000).coerceAtLeast(0)
+            for (i in from until a.length()) out.put(a.get(i))
+            p.edit().putString("uploadHistory", out.toString()).apply()
+        }
+    }
+
+    fun history(ctx: Context): List<Hist> = try {
+        val a = org.json.JSONArray(ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getString("uploadHistory", "[]"))
+        (0 until a.length()).map { a.getJSONObject(it) }.map { Hist(it.optString("name"), it.optLong("size"), it.optLong("time"), it.optString("dir")) }
+    } catch (e: Exception) { emptyList() }
+
+    fun removeHistory(ctx: Context, name: String, time: Long) {
+        val p = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
+        synchronized(this) {
+            val a = try { org.json.JSONArray(p.getString("uploadHistory", "[]")) } catch (e: Exception) { return }
+            val out = org.json.JSONArray()
+            for (i in 0 until a.length()) { val o = a.getJSONObject(i); if (!(o.optString("name") == name && o.optLong("time") == time)) out.put(o) }
+            p.edit().putString("uploadHistory", out.toString()).apply()
+        }
+    }
+
     private fun loop(ctx: Context) {
         while (true) {
             val now = System.currentTimeMillis()
@@ -188,6 +221,7 @@ object Uploader {
             current = null
             if (ok) {
                 lastResult = "업로드 완료: ${job.name}"
+                addHistory(ctx, job)
                 RecordService.addLog("$lastResult (원본은 휴지통으로, ${TRASH_DAYS}일 뒤 삭제)")
             } else {
                 job.tries++
