@@ -784,6 +784,7 @@ class MainActivity : Activity() {
     private fun showLab() {
         val items = arrayOf(
             "★ 한 번에 시험 (2분): 방송 확인 + 재생기 없이 녹화 + 채팅 직접",
+            "티켓방 조사 (지금 보고 있는 방송, 약 40초)",
             "② 직접 받기 시험 (녹화 중인 방송, 90초)",
             "③ 결과 복사 (붙여넣어 보내 주세요)",
             "진행 상황 보기",
@@ -793,6 +794,12 @@ class MainActivity : Activity() {
                 when (i) {
                     0 -> {
                         Lab.allInOne(this, 120) {}
+                        showLabProgress()
+                    }
+                    1 -> {
+                        val u = web.url ?: ""
+                        if (!u.contains("stripchat")) { Toast.makeText(this, "먼저 티켓방 방송 페이지를 열어 주세요", Toast.LENGTH_LONG).show(); return@setItems }
+                        Lab.ticketProbe(this, u) {}
                         showLabProgress()
                     }
                     99 -> {
@@ -805,7 +812,7 @@ class MainActivity : Activity() {
                         Lab.masterCheckTest(this, listOf("1000001", "262938061")) {}
                         showLabProgress()
                     }
-                    1 -> {
+                    2 -> {
                         val ids = Lab.probes.values.filter { it.playlists.isNotEmpty() }.map { it.slotId }.take(3)
                         if (ids.isEmpty()) { Toast.makeText(this, "녹화 중인 방송이 1분 이상 받아진 뒤 다시 눌러 주세요", Toast.LENGTH_LONG).show(); return@setItems }
                         var left = ids.size
@@ -813,12 +820,12 @@ class MainActivity : Activity() {
                         ids.forEach { id -> Lab.directTest(this, id, 90) { left-- } }
                         showLabProgress()
                     }
-                    2 -> {
+                    3 -> {
                         val path = Lab.export(this)
                         Toast.makeText(this, "복사했어요. 채팅에 붙여넣어 주세요\n(파일: $path)", Toast.LENGTH_LONG).show()
                     }
-                    3 -> showLabProgress()
-                    4 -> { Lab.clear(); Toast.makeText(this, "지웠어요", Toast.LENGTH_SHORT).show() }
+                    4 -> showLabProgress()
+                    5 -> { Lab.clear(); Toast.makeText(this, "지웠어요", Toast.LENGTH_SHORT).show() }
                 }
             }
             .setNegativeButton("닫기", null).show()

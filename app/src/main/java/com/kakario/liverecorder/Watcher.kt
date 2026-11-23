@@ -101,11 +101,11 @@ object Watcher {
         main.post { learnNow(ctx, b) }
     }
 
-    @Volatile private var apiHeaders: Map<String, String>? = null
-    @Volatile private var apiBase = "https://ko.stripchat.com"
+    @Volatile var apiHeaders: Map<String, String>? = null; private set
+    @Volatile var apiBase = "https://ko.stripchat.com"; private set
 
     /** 이름→번호 주소에 직접 물어보기. 응답에서 번호를 꺼냄 */
-    private fun askId(url: String, hs: Map<String, String>): String? = try {
+    fun askId(url: String, hs: Map<String, String>): String? = try {
         val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
         conn.connectTimeout = 8000; conn.readTimeout = 8000
         hs.forEach { (k, v) -> if (!k.equals("Accept-Encoding", true)) conn.setRequestProperty(k, v) }

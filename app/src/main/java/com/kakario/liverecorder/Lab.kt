@@ -418,6 +418,67 @@ object Lab {
         }.start()
     }
 
+    /** 티켓방 조사: 지금 보고 있는 방송의 사이트 정보·방송 목록·화질별 목록을 원본 그대로 + 일반/흐린 화면 30초씩 직접 받기 */
+    fun ticketProbe(ctx: Context, pageUrl: String, done: () -> Unit) {
+        appCtx = ctx.applicationContext
+        loadKeys(ctx)
+        val name = Names.streamerFromUrl(pageUrl)
+        val sec = "티켓방 조사 $name"
+        running++
+        progress["티켓방 조사"] = "번호 확인 중…"
+        Thread {
+            try {
+                var id = Watcher.idOf(ctx, pageUrl)
+                val hs = Watcher.apiHeaders
+                if (id == null && hs != null) id = Watcher.askId("${Watcher.apiBase}/api/front/users/user-ids/" + java.net.URLEncoder.encode(name, "UTF-8"), hs)?.also { Watcher.learnId(ctx, pageUrl, it) }
+                if (id == null) { add(sec, "스트리머 번호를 모름 → 이 방송을 한 번 녹화(또는 자동 녹화)한 뒤 다시"); return@Thread }
+                add(sec, "번호 $id")
+                // 1) 사이트 정보 (상태: public / groupShow / private 등)
+                if (hs != null) {
+                    val u = "${Watcher.apiBase}/api/front/v2/models/$id/cam?timezoneOffset=-540&triggerRequest=loadCam&withRecentShow=1"
+                    val r = try { get(u, hs.filterKeys { !it.equals("Accept-Encoding", true) }) } catch (e: Exception) { null }
+                    val t = r?.body?.let { String(it) } ?: ""
+                    add(sec, "사이트 정보 ${r?.code}: " + listOf("status", "isCamAvailable", "isLive", "show", "groupShow", "ticket", "spy", "price", "mode", "accessMode")
+                        .mapNotNull { k -> Regex("\"$k[A-Za-z]*\"\\s*:\\s*(\"[^\"]*\"|[0-9.]+|true|false|null)").findAll(t).take(3).map { it.value }.toList().takeIf { it.isNotEmpty() }?.joinToString(" ") }.joinToString(" | "))
+                    add(sec, "사이트 정보 원본 앞부분: " + t.take(2500))
+                } else add(sec, "사이트 정보: 머리글이 아직 없음 (자동 녹화 번호 찾기가 한 번 돌아야 함)")
+                // 2) 방송 목록(master)
+                progress["티켓방 조사"] = "방송 목록 확인 중…"
+                val mu = "https://edge-hls.doppiocdn.org/hls/$id/master/${id}_auto.m3u8?playlistType=lowLatency"
+                val mr = try { get(mu, CDN_H) } catch (e: Exception) { null }
+                val master = mr?.body?.let { String(it) } ?: ""
+                add(sec, "방송 목록 ${mr?.code}:\n" + master.lines().take(40).joinToString("\n"))
+                val pk = master.lines().filter { it.startsWith("#EXT-X-MOUFLON:PSCH:") }.map { it.substringAfterLast(':').trim() }.firstOrNull { keys.containsKey(it) }
+                // 3) 화질별 목록 (흐린 화면 포함)
+                val ls = master.lines()
+                var normal: String? = null; var blurred: String? = null
+                for (i in ls.indices) if (ls[i].startsWith("#EXT-X-STREAM-INF")) {
+                    val u0 = ls.getOrNull(i + 1)?.trim() ?: continue
+                    val u = if (pk != null) u0 + (if (u0.contains('?')) "&" else "?") + "psch=v2&pkey=$pk" else u0
+                    val r = try { get(u, CDN_H) } catch (e: Exception) { null }
+                    val body = r?.body?.let { String(it) } ?: ""
+                    val isBlur = (ls[i] + u0).contains("blurred", true)
+                    add(sec, (if (isBlur) "[흐린 화면] " else "") + ls[i].substringAfter("NAME=").take(40) + " → ${r?.code}\n" + body.lines().take(22).joinToString("\n"))
+                    if (r != null && r.code in 200..299) { if (isBlur) { if (blurred == null) blurred = u } else if (normal == null) normal = u }
+                }
+                add(sec, "열리는 목록: 일반 ${if (normal != null) "있음" else "없음"} · 흐린 화면 ${if (blurred != null) "있음" else "없음"}")
+                // 4) 일반·흐린 화면 30초씩 직접 받기
+                var left = listOfNotNull(normal, blurred).size
+                if (left == 0) return@Thread
+                progress["티켓방 조사"] = "30초 직접 받기 중…"
+                normal?.let { u -> directRun(ctx, "$sec · 일반 화면 받기", "티켓방 일반", "티켓방시험 $name 일반", u, CDN_H, 30) { left-- } }
+                blurred?.let { u -> directRun(ctx, "$sec · 흐린 화면 받기", "티켓방 흐림", "티켓방시험 $name 흐림", u, CDN_H, 30) { left-- } }
+                while (left > 0) Thread.sleep(500)
+            } catch (e: Exception) {
+                add(sec, "오류: ${e.message}")
+            } finally {
+                progress["티켓방 조사"] = "끝"
+                running--
+                main.post(done)
+            }
+        }.start()
+    }
+
     /** 목표 화질 이하를 좋은 순으로, 그다음 목표보다 높은 것 */
     private fun rankVariants(master: String, target: Int): List<Pair<String, String>> {
         val ls = master.lines()
