@@ -1050,8 +1050,17 @@ class MainActivity : Activity() {
             return t + "\n\n내용 갱신 " + fmt.format(java.util.Date(at)) + " · 마지막 확인 " + fmt.format(java.util.Date(chk)) + "\n(이 창을 보는 동안 1분마다 확인)"
         }
         val h = android.os.Handler(android.os.Looper.getMainLooper())
-        val dlg = AlertDialog.Builder(this).setTitle("녹화폰 현황").setMessage(body())
-            .setPositiveButton("지금 새로고침", null).setNegativeButton("닫기", null).create()
+        // 제목줄: '녹화폰 현황' + 작은 남은 초 + 회전 화살표(누르면 바로 갱신)
+        val bar = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(dp(22), dp(18), dp(10), dp(4)) }
+        bar.addView(TextView(this).apply { text = "녹화폰 현황"; textSize = 19f; setTextColor(Color.BLACK); setTypeface(null, android.graphics.Typeface.BOLD) })
+        val secs = TextView(this).apply { textSize = 12f; setTextColor(Color.GRAY); setPadding(dp(10), 0, 0, 0) }
+        bar.addView(secs, LinearLayout.LayoutParams(0, -2, 1f))
+        val spin = android.widget.ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_popup_sync); setBackgroundColor(Color.TRANSPARENT); contentDescription = "지금 갱신"
+        }
+        bar.addView(spin, LinearLayout.LayoutParams(dp(44), dp(44)))
+        val dlg = AlertDialog.Builder(this).setCustomTitle(bar).setMessage(body())
+            .setNegativeButton("닫기", null).create()
         var nextAt = 0L
         val tick = object : Runnable {
             override fun run() { if (!dlg.isShowing) return; CloudBm.askStatus(this@MainActivity); nextAt = System.currentTimeMillis() + 60_000; h.postDelayed(this, 60_000) }
@@ -1061,19 +1070,16 @@ class MainActivity : Activity() {
             override fun run() {
                 if (!dlg.isShowing) return
                 val left = ((nextAt - System.currentTimeMillis()) / 1000).coerceAtLeast(0)
-                dlg.setTitle(android.text.SpannableString("녹화폰 현황   ${left}초 뒤 갱신").apply {
-                    setSpan(android.text.style.RelativeSizeSpan(0.6f), 6, length, 0)
-                    setSpan(android.text.style.ForegroundColorSpan(Color.GRAY), 6, length, 0)
-                })
+                secs.text = "${left}초 뒤 갱신"
                 h.postDelayed(this, 1000)
             }
         }
         Push.onStatus = { _ -> runOnUiThread { if (dlg.isShowing) dlg.setMessage(body()) } }
         dlg.setOnDismissListener { Push.onStatus = null; h.removeCallbacks(tick); h.removeCallbacks(count) }
         dlg.show()
-        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+        spin.setOnClickListener {
             h.removeCallbacks(tick); h.post(tick)   // 지금 묻고 1분 카운트 다시
-            Toast.makeText(this, "물어보는 중…", Toast.LENGTH_SHORT).show()
+            spin.animate().rotationBy(360f).setDuration(600).start()
         }
         h.post(tick); h.post(count)
     }
