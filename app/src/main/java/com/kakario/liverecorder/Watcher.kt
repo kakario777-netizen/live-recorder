@@ -30,7 +30,8 @@ object Watcher {
     private fun key(url: String) = url.trimEnd('/').lowercase()
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("watch", Context.MODE_PRIVATE)
 
-    fun watched(ctx: Context) = Bookmarks.localList(ctx).filter { it.watch }
+    /** 생방 대기는 녹화폰에서만 (원격폰은 뷰어든 다운로드든 대기 없음) */
+    fun watched(ctx: Context) = if (!CloudBm.recordHere(ctx)) emptyList() else Bookmarks.localList(ctx).filter { it.watch }
     fun any(ctx: Context) = watched(ctx).isNotEmpty()
     fun isWatched(ctx: Context, url: String) = watched(ctx).any { key(it.url) == key(url) }
 
