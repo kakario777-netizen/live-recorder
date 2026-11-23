@@ -1039,18 +1039,27 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 원격폰: 녹화폰 현황을 물어보고 답이 오면 팝업 */
+    /** 원격폰: 녹화폰 현황 (화면을 보고 있는 동안만 1분마다 갱신, 바뀐 게 없으면 녹화폰은 한 글자만 답함) */
     private fun askRecorderStatus() {
         if (CloudBm.recordHere(this)) { Toast.makeText(this, "이 폰이 녹화폰이에요. 설정 '폰 역할'에서 원격폰으로 바꾼 폰에서 써 주세요.", Toast.LENGTH_LONG).show(); return }
-        val wait = AlertDialog.Builder(this).setTitle("녹화폰 현황").setMessage("녹화폰에 물어보는 중… (보통 2~5초)").setNegativeButton("닫기", null).show()
-        Push.onStatus = { text -> runOnUiThread {
-            if (wait.isShowing) wait.dismiss()
-            AlertDialog.Builder(this).setTitle("녹화폰 현황").setMessage(text)
-                .setPositiveButton("새로고침") { _, _ -> askRecorderStatus() }
-                .setNegativeButton("닫기", null).show()
-        } }
-        CloudBm.askStatus(this)
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ if (wait.isShowing) wait.setMessage("30초 동안 답이 없어요. 녹화폰이 꺼져 있거나 인터넷이 안 될 수 있어요.") }, 30_000)
+        val p = getSharedPreferences("cloudBm", MODE_PRIVATE)
+        val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.KOREA)
+        fun body(): String {
+            val t = p.getString("lastStatus", null) ?: return "녹화폰에 물어보는 중… (보통 2~5초)"
+            val at = p.getLong("lastStatusAt", 0); val chk = p.getLong("lastStatusCheck", 0)
+            return t + "\n\n내용 갱신 " + fmt.format(java.util.Date(at)) + " · 마지막 확인 " + fmt.format(java.util.Date(chk)) + "\n(이 창을 보는 동안 1분마다 확인)"
+        }
+        val h = android.os.Handler(android.os.Looper.getMainLooper())
+        val dlg = AlertDialog.Builder(this).setTitle("녹화폰 현황").setMessage(body())
+            .setPositiveButton("지금 새로고침", null).setNegativeButton("닫기", null).create()
+        val tick = object : Runnable {
+            override fun run() { if (!dlg.isShowing) return; CloudBm.askStatus(this@MainActivity); h.postDelayed(this, 60_000) }
+        }
+        Push.onStatus = { _ -> runOnUiThread { if (dlg.isShowing) dlg.setMessage(body()) } }
+        dlg.setOnDismissListener { Push.onStatus = null; h.removeCallbacks(tick) }
+        dlg.show()
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { CloudBm.askStatus(this); Toast.makeText(this, "물어보는 중…", Toast.LENGTH_SHORT).show() }
+        h.post(tick)
     }
 
     /** 폰 역할 · 즐겨찾기 맞추기 (메인 계정 드라이브) · 녹화폰 알림 */

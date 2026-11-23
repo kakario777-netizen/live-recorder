@@ -39,6 +39,7 @@ object Push {
 }
 
 class PushService : FirebaseMessagingService() {
+    companion object { @Volatile var lastSent = ""; @Volatile var lastSentAt = 0L }
     override fun onMessageReceived(m: RemoteMessage) {
         val d = m.data
         if (d["t"] == "bm" && CloudBm.on(this)) {
@@ -47,7 +48,10 @@ class PushService : FirebaseMessagingService() {
         }
         // 원격폰이 현황을 물어봄 → 녹화폰이 짧게 답함
         if (d["t"] == "req" && CloudBm.recordHere(this)) {
-            CloudBm.notifyRemote(this, "녹화폰 현황", CloudBm.statusText(), force = true)
+            val st = CloudBm.statusText()
+            val same = st == lastSent && System.currentTimeMillis() - lastSentAt < 10 * 60_000L
+            if (!same) { lastSent = st; lastSentAt = System.currentTimeMillis() }
+            CloudBm.notifyRemote(this, "녹화폰 현황", if (same) "=" else st, force = true)   // 바뀐 게 없으면 '=' 한 글자만
         }
         // 원격폰(뷰어)이 녹화를 부탁함 → 녹화폰이 받아서 녹화
         if (d["t"] == "note" && d["src"] != CloudBm.deviceId(this) && CloudBm.recordHere(this) && d["title"] == "녹화 요청") {
@@ -64,9 +68,11 @@ class PushService : FirebaseMessagingService() {
         if (d["t"] == "note" && d["src"] != CloudBm.deviceId(this) && !CloudBm.recordHere(this)) {
             val title = d["title"].orEmpty(); val body = d["body"].orEmpty()
             if (title == "녹화폰 현황") {
-                // 내가 물어본 답: 화면이 떠 있으면 팝업, 아니면 알림창 (기록 목록엔 안 남김)
-                val cb = Push.onStatus
-                if (cb != null && System.currentTimeMillis() - CloudBm.statusAskedAt < 120_000) cb(body) else showNote(title, body)
+                // 물어본 답: 마지막 현황을 저장해 두고, 현황 화면이 떠 있으면 바로 갱신 (알림창엔 안 띄움)
+                val p = getSharedPreferences("cloudBm", MODE_PRIVATE)
+                if (body != "=") p.edit().putString("lastStatus", body).putLong("lastStatusAt", System.currentTimeMillis()).apply()
+                p.edit().putLong("lastStatusCheck", System.currentTimeMillis()).apply()
+                Push.onStatus?.invoke(body)
             } else if (CloudBm.notifyOn(this)) {
                 Uploader.addNote(this, title, body)
                 showNote(title, body)
