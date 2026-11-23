@@ -225,6 +225,7 @@ class RecordService : Service() {
         instance = this
         Tidy.init(this)
         Lab.appCtx = applicationContext
+        CloudBm.startLoop(this)
         logFile = java.io.File(filesDir, "record_log.txt")
         try { Lab.loadKeys(this) } catch (_: Exception) {}
         if (Watcher.any(this)) Watcher.start(this)

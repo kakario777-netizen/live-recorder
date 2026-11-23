@@ -27,7 +27,7 @@ object Sync {
     fun isRemote(ctx: Context) = role(ctx) == REMOTE && FtpConfig.ready(ctx)
     fun isRecorder(ctx: Context) = role(ctx) == RECORDER && FtpConfig.ready(ctx)
     /** 즐겨찾기만 폰끼리 맞추기 (녹화는 폰마다 따로) */
-    fun bmOn(ctx: Context) = prefs(ctx).getBoolean("bmSync", false) && FtpConfig.ready(ctx)
+    fun bmOn(ctx: Context) = false   // 즐겨찾기 맞추기는 구글(CloudBm)로 옮김
     private var lastPull = 0L
     /** 앱 화면을 열 때 등: 1분 안에 한 적 없으면 NAS와 맞춤 */
     fun pullSoon(ctx: Context, minGapMs: Long = 60_000) {

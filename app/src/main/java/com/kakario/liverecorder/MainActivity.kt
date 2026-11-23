@@ -27,6 +27,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.FrameLayout
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
@@ -205,7 +206,8 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         updater.onResume()
-        Sync.pullSoon(this)
+        CloudBm.startLoop(this)
+        if (CloudBm.on(this)) Thread { CloudBm.sync(applicationContext) }.start()
         if (RecordService.running) RecordService.addLog("앱 화면 열림 (탭 ${tabs.size}개" + (web.url?.let { ", 지금 탭: " + Names.siteName(it) } ?: "") + ")")
     }
 
@@ -759,7 +761,7 @@ class MainActivity : Activity() {
         val items = arrayOf("다운 화질 (사이트별)", "NAS 업로드·폰끼리 동기화", "아이콘 이름 표시: " + (if (labels) "켜짐 (누르면 끄기)" else "꺼짐 (누르면 켜기)"),
             "진단 (문제 생겼을 때)", "녹화 기록 보기", "업데이트 확인",
             "채팅 저장: " + (if (prefs.getBoolean("chatKoreanOnly", true)) "한국어 방송만 (켜짐 · 누르면 끄기)" else "모든 방송 (꺼짐 · 누르면 켜기)"),
-            "즐겨찾기 폰끼리 맞추기: " + (if (prefs.getBoolean("bmSync", false)) "켜짐 (누르면 끄기)" else "꺼짐 (누르면 켜기)")) +
+            "즐겨찾기 폰끼리 맞추기 (구글): " + (if (CloudBm.on(this)) "켜짐" else "꺼짐")) +
             (if (Lab.on) arrayOf("실험실 (가볍게 받기 시험)") else emptyArray())
         AlertDialog.Builder(this)
             .setTitle("설정")
@@ -776,16 +778,7 @@ class MainActivity : Activity() {
                         prefs.edit().putBoolean("chatKoreanOnly", on).apply()
                         Toast.makeText(this, if (on) "처음 채팅 15줄쯤 보고 한국어가 있을 때만 채팅을 저장해요" else "모든 방송의 채팅을 저장해요", Toast.LENGTH_LONG).show()
                     }
-                    7 -> {
-                        if (!FtpConfig.ready(this)) { Toast.makeText(this, "먼저 'NAS 업로드' 설정을 해 주세요 (즐겨찾기를 NAS에 두고 맞춰요)", Toast.LENGTH_LONG).show(); return@setItems }
-                        val on = !prefs.getBoolean("bmSync", false)
-                        prefs.edit().putBoolean("bmSync", on).apply()
-                        if (on) Thread {
-                            val r = Sync.syncData(this)
-                            runOnUiThread { Toast.makeText(this, r, Toast.LENGTH_LONG).show() }
-                        }.start()
-                        else Toast.makeText(this, "즐겨찾기 맞추기를 껐어요", Toast.LENGTH_SHORT).show()
-                    }
+                    7 -> showCloudBm()
                     8 -> showLab()
                 }
             }
@@ -1036,6 +1029,41 @@ class MainActivity : Activity() {
                 runOnUiThread { showDiag(text, saved) }
             }.start()
         }
+    }
+
+    /** 즐겨찾기 폰끼리 맞추기 (구글 앱스 스크립트) */
+    private fun showCloudBm() {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(8), dp(18), 0) }
+        box.addView(TextView(this).apply {
+            textSize = 13f
+            text = "처음 한 번만:\n1. 아래 '스크립트 코드 복사'\n2. PC나 폰에서 script.google.com → 새 프로젝트 → 내용 전부 지우고 붙여 넣기 → 저장\n" +
+                "3. 배포 → 새 배포 → 유형 '웹 앱' → 액세스 '모든 사용자' → 배포 → 권한 허용\n4. 나온 웹 앱 주소(…/exec)를 아래 칸에 붙여 넣기 (두 폰 모두 같은 주소)\n\n" +
+                "그 뒤로는 한 폰에서 바꾸면 다른 폰이 30초 안에 알아서 받아요.\n\n지금: " + (if (CloudBm.on(this)) "연결됨 · " + CloudBm.lastResult else "연결 안 됨")
+        })
+        val et = EditText(this).apply { hint = "https://script.google.com/macros/s/…/exec"; setText(CloudBm.url(this@MainActivity)); isSingleLine = true; textSize = 13f }
+        box.addView(et)
+        val rec = CheckBox(this).apply { text = "이 폰에서 생방 대기 녹화 하기 (녹화 안 하는 폰은 끄기)"; isChecked = CloudBm.recordHere(this@MainActivity) }
+        box.addView(rec)
+        AlertDialog.Builder(this)
+            .setTitle("즐겨찾기 폰끼리 맞추기")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setNeutralButton("스크립트 코드 복사") { _, _ ->
+                copyAll("스크립트", CloudBm.SCRIPT)
+                Toast.makeText(this, "복사했어요. script.google.com 새 프로젝트에 붙여 넣어 주세요.", Toast.LENGTH_LONG).show()
+            }
+            .setPositiveButton("저장하고 맞추기") { _, _ ->
+                CloudBm.setRecordHere(this, rec.isChecked)
+                val u = et.text.toString().trim()
+                if (u != CloudBm.url(this)) CloudBm.setUrl(this, u)
+                if (rec.isChecked && Watcher.any(this)) RecordService.startWatch(this)
+                if (!CloudBm.on(this)) { Toast.makeText(this, if (u.isEmpty()) "저장했어요" else "주소는 https://script.google.com/ 로 시작해야 해요", Toast.LENGTH_LONG).show(); return@setPositiveButton }
+                Thread {
+                    val r = CloudBm.sync(applicationContext)
+                    runOnUiThread { Toast.makeText(this, r, Toast.LENGTH_LONG).show() }
+                }.start()
+            }
+            .setNegativeButton("닫기", null)
+            .show()
     }
 
     private fun copyAll(label: String, text: String) {

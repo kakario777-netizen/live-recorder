@@ -46,6 +46,7 @@ object Bookmarks {
     private fun changed(ctx: Context, l: List<Item>) {
         saveAll(ctx, l)
         Sync.pushSoon(ctx)
+        CloudBm.changed(ctx)
     }
 
     /** 같은 주소가 있으면 이름만 바꿈 */
@@ -69,10 +70,13 @@ object Bookmarks {
         val saved = try { JSONArray(prefs(ctx).getString("bmCats", "[]")).let { a -> (0 until a.length()).map { a.getString(it) } } } catch (e: Exception) { emptyList() }
         return (saved + list(ctx).map { it.cat }.filter { it.isNotEmpty() }).distinct()
     }
-    private fun saveCats(ctx: Context, l: List<String>) =
+    private fun saveCats(ctx: Context, l: List<String>) {
         prefs(ctx).edit().putString("bmCats", JSONArray(l.distinct()).toString()).apply()
+        CloudBm.changed(ctx)
+    }
 
-    fun setCats(ctx: Context, l: List<String>) = saveCats(ctx, l)
+    /** 다른 폰에서 받은 폴더 목록 저장 (다시 올리지 않음) */
+    fun setCats(ctx: Context, l: List<String>) = prefs(ctx).edit().putString("bmCats", JSONArray(l.distinct()).toString()).apply()
     fun addCat(ctx: Context, name: String) { if (name.isNotBlank()) saveCats(ctx, cats(ctx) + name.trim()) }
 
     fun renameCat(ctx: Context, old: String, new: String) {

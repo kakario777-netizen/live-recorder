@@ -214,7 +214,7 @@ class BookmarksActivity : Activity() {
 
     private val refresher = android.os.Handler(android.os.Looper.getMainLooper())
     private val refreshTick = object : Runnable { override fun run() { renderList(); refresher.postDelayed(this, 5000) } }
-    override fun onResume() { super.onResume(); refresher.postDelayed(refreshTick, 5000); Sync.pullSoon(this) }
+    override fun onResume() { super.onResume(); refresher.postDelayed(refreshTick, 5000); if (CloudBm.on(this)) Thread { CloudBm.sync(applicationContext) }.start() }
     override fun onPause() { refresher.removeCallbacks(refreshTick); super.onPause() }
 
     private fun recordAll() {

@@ -30,7 +30,7 @@ object Watcher {
     private fun key(url: String) = url.trimEnd('/').lowercase()
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("watch", Context.MODE_PRIVATE)
 
-    fun watched(ctx: Context) = Bookmarks.list(ctx).filter { it.watch }
+    fun watched(ctx: Context) = if (!CloudBm.recordHere(ctx)) emptyList() else Bookmarks.list(ctx).filter { it.watch }
     fun any(ctx: Context) = watched(ctx).isNotEmpty()
     fun isWatched(ctx: Context, url: String) = watched(ctx).any { key(it.url) == key(url) }
 
@@ -53,7 +53,6 @@ object Watcher {
         val h = mapOf("Origin" to "https://ko.stripchat.com", "Referer" to "https://ko.stripchat.com/", "Accept" to "*/*",
             "User-Agent" to "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36")
         while (RecordService.instance != null) {
-            if (Sync.bmOn(ctx)) Sync.pullSoon(ctx, 5 * 60_000L)   // 다른 폰에서 바꾼 즐겨찾기 5분마다 받아 옴
             val list = watched(ctx)
             if (list.isEmpty()) { status.clear(); Thread.sleep(15_000); continue }
             val t0 = System.currentTimeMillis()
