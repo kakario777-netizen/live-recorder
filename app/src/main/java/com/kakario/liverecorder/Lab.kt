@@ -137,7 +137,7 @@ object Lab {
             if (p.segHeaders.isEmpty()) p.segHeaders = headers.entries.joinToString(" | ") { "${it.key}: ${it.value}" }
         }
         // 재생기가 요청한 진짜 이름과 암호를 맞춰 보며 풀이 방식 찾기
-        if (p.pairs.isNotEmpty() && p.segs.size in listOf(5, 15, 30)) analyze(p, p.playlists.lastOrNull()?.first ?: "", p.playlists.lastOrNull()?.second ?: "")
+        if (p.playlists.isNotEmpty() && p.segs.size in listOf(6, 12, 20, 30)) analyze(p, p.playlists.lastOrNull()?.first ?: "", p.playlists.lastOrNull()?.second ?: "")
     }
 
     private fun b64(s: String): ByteArray? {
@@ -159,37 +159,52 @@ object Lab {
     private fun xor(d: ByteArray, k: ByteArray) = ByteArray(d.size) { (d[it].toInt() xor k[it % k.size].toInt()).toByte() }
     private fun printable(b: ByteArray) = b.isNotEmpty() && b.all { it in 0x20..0x7e }
 
-    /** 알려진 후보 열쇠로 풀어 보고, 안 되면 '재생기가 요청한 진짜 이름'과 맞춰 반복 열쇠를 찾아본다 */
+    /** pkey별로 알아낸 풀이 열쇠(16바이트) */
+    val keys = ConcurrentHashMap<String, ByteArray>()
+    private val segRe = Regex("""_(\d+)_([A-Za-z0-9+/=]{16,})_(\d+)(_part\d+)?\.mp4""")
+    private val plainRe = Regex("""_(\d+)_([A-Za-z0-9]{16})_(\d+)(_part\d+)?\.mp4""")
+
+    /** 거꾸로 뒤집어 base64로 풀고 열쇠와 XOR */
+    fun decodeToken(enc: String, ks: ByteArray): String? = try {
+        val r = enc.reversed()
+        val b = android.util.Base64.decode(r + "=".repeat((4 - r.length % 4) % 4), android.util.Base64.DEFAULT)
+        val o = ByteArray(b.size) { (b[it].toInt() xor ks[it % ks.size].toInt()).toByte() }
+        if (o.all { it in 0x21..0x7e }) String(o) else null
+    } catch (e: Exception) { null }
+
+    /** 암호 주소 한 줄 → 진짜 주소 */
+    fun decodeUrl(url: String, ks: ByteArray): String? {
+        val m = segRe.find(url) ?: return null
+        val dec = decodeToken(m.groupValues[2], ks) ?: return null
+        return url.replaceRange(m.groups[2]!!.range, dec)
+    }
+
+    /** 재생기가 요청한 진짜 이름과 목록의 암호를 (번호+시각)으로 짝지어 열쇠를 알아냄 */
     private fun analyze(p: Probe, url: String, body: String) {
+        val pkey = Regex("""[?&]pkey=([^&]+)""").find(url)?.groupValues?.get(1) ?: return
+        val encMap = HashMap<String, String>()   // "번호_시각" → 암호
+        body.lines().filter { it.startsWith("#EXT-X-MOUFLON:URI:") }.forEach { l ->
+            segRe.find(l)?.let { encMap[it.groupValues[1] + "_" + it.groupValues[3]] = it.groupValues[2] }
+        }
+        val segs = synchronized(p) { p.segs.toList() }
         val sb = StringBuilder()
-        val pairs = synchronized(p) { p.pairs.toList() }
-        if (pairs.isEmpty()) return
-        val keys = LinkedHashSet<String>()
-        Regex("""[?&]pkey=([^&]+)""").find(url)?.groupValues?.get(1)?.let { keys.add(java.net.URLDecoder.decode(it, "UTF-8")) }
-        body.lines().filter { it.startsWith("#EXT-X-MOUFLON:PSCH:") }.forEach { l -> l.split(':').drop(2).forEach { if (it.length >= 6) keys.add(it.trim()) } }
-        sb.append("후보 열쇠: ").append(keys.joinToString(", ")).append('\n')
-        val enc0 = pairs.first().first
-        for (k in keys) for ((how, d) in b64All(enc0)) {
-            val r = xor(d, sha256(k))
-            if (printable(r)) sb.append("성공 후보 sha256($k) $how → ").append(String(r)).append('\n')
+        var found: ByteArray? = null; var agree = 0; var tried = 0
+        for (sUrl in segs) {
+            val m = plainRe.find(sUrl) ?: continue
+            val enc = encMap[m.groupValues[1] + "_" + m.groupValues[3]] ?: continue
+            tried++
+            val r = enc.reversed()
+            val b = try { android.util.Base64.decode(r + "=".repeat((4 - r.length % 4) % 4), android.util.Base64.DEFAULT) } catch (e: Exception) { continue }
+            val plain = m.groupValues[2].toByteArray()
+            if (b.size != plain.size) continue
+            val ks = ByteArray(b.size) { (b[it].toInt() xor plain[it].toInt()).toByte() }
+            if (found == null) found = ks
+            if (found.contentEquals(ks)) agree++
         }
-        // 진짜 이름(재생기가 요청한 주소의 마지막 부분)과 맞춰 보기
-        val names = synchronized(p) { p.segs.map { it.substringBefore('?').substringAfterLast('/') } }.distinct()
-        var learned = 0
-        for ((enc, _) in pairs.take(30)) for ((how, d) in b64All(enc)) for (n in names) {
-            val nb = n.toByteArray()
-            if (nb.size != d.size) continue
-            val ks = xor(d, nb)
-            // 같은 열쇠로 다른 암호도 풀리면 '반복 열쇠' 찾은 것
-            val ok = pairs.count { (e2, _) -> b64All(e2).any { (h2, d2) -> h2 == how && printable(xor(d2, ks)) && names.contains(String(xor(d2, ks))) } }
-            if (ok >= 2 && learned < 3) {
-                learned++
-                sb.append("반복 열쇠 찾음($how, ${ok}개 맞음): ").append(ks.joinToString("") { "%02x".format(it) }).append('\n')
-                keys.forEach { k -> val h = sha256(k); if (h.copyOf(minOf(32, ks.size)).contentEquals(ks.copyOf(minOf(32, ks.size)))) sb.append("  → sha256($k)와 같음\n") }
-            }
-        }
-        if (learned == 0) sb.append("진짜 이름과 맞춘 반복 열쇠: 아직 못 찾음 (조각 이름 ${names.size}개, 암호 ${pairs.size}개)\n")
-        sb.append("암호 예시: ").append(pairs.take(5).joinToString(" / ") { "${it.first} → ${it.second}" }).append('\n')
+        if (found != null && agree >= 2 && agree == tried) {
+            keys[pkey] = found
+            sb.append("풀이 열쇠 찾음 (pkey $pkey): ").append(found.joinToString("") { "%02x".format(it) }).append(" · ${agree}개 모두 일치\n")
+        } else sb.append("풀이 열쇠 아직: 짝 ${tried}개 중 일치 $agree\n")
         synchronized(p) { p.decodeNote = sb.toString() }
     }
 
@@ -218,10 +233,8 @@ object Lab {
             val codes = HashMap<String, Int>()
             var segOk = 0; var bytes = 0L; var initDone = false; var polls = 0; var listFail = 0
             val cpu0 = android.os.Process.getElapsedCpuTime()
+            val tcpu0 = android.os.SystemClock.currentThreadTimeMillis()
             val t0 = System.currentTimeMillis()
-            val keyHex = Regex("""반복 열쇠 찾음\([^)]*\): ([0-9a-f]+)""").find(p.decodeNote)?.groupValues?.get(1)
-            var decodeHow = Regex("""반복 열쇠 찾음\(([^,]*),""").find(p.decodeNote)?.groupValues?.get(1)
-            val ks = keyHex?.chunked(2)?.map { it.toInt(16).toByte() }?.toByteArray()
             try {
                 while (System.currentTimeMillis() - t0 < seconds * 1000L) {
                     polls++
@@ -230,9 +243,11 @@ object Lab {
                     if (r == null || r.code !in 200..299) { listFail++; if (listFail <= 3) add(sec, "목록 받기 실패: ${r?.code ?: "연결 오류"}"); Thread.sleep(1000); continue }
                     val text = String(r.body)
                     if (polls == 1) add(sec, "직접 받은 목록 첫 40줄:\n" + text.lines().take(40).joinToString("\n"))
+                    val pkey = Regex("""[?&]pkey=([^&]+)""").find(plUrl)?.groupValues?.get(1) ?: ""
+                    val ks = keys[pkey]
+                    if (ks == null) { if (polls == 1) add(sec, "풀이 열쇠가 없음 (pkey $pkey) → 재생기로 1분 이상 받은 뒤 다시"); Thread.sleep(1500); continue }
                     val ls = text.lines()
-                    var pendingName: String? = null
-                    for (l0 in ls) {
+                    for ((idx, l0) in ls.withIndex()) {
                         val l = l0.trim()
                         if (l.startsWith("#EXT-X-MAP:")) {
                             if (initDone) continue
@@ -242,29 +257,25 @@ object Lab {
                             if (ir != null && ir.code in 200..299) { fos.write(ir.body); bytes += ir.body.size; initDone = true }
                             continue
                         }
-                        if (l.startsWith("#EXT-X-MOUFLON:FILE:")) {
-                            val enc = l.removePrefix("#EXT-X-MOUFLON:FILE:").trim()
-                            pendingName = if (ks != null) b64All(enc).firstOrNull { decodeHow == null || it.first == decodeHow }?.second?.let { String(xor(it, ks)) } else null
-                            continue
-                        }
-                        if (l.isEmpty() || l.startsWith("#")) continue
-                        // 조각 주소 줄 (암호가 풀렸으면 마지막 이름을 바꿔 끼움)
-                        var u = l
-                        if (pendingName != null) { u = u.substringBeforeLast('/', "").let { if (it.isEmpty()) pendingName!! else "$it/$pendingName" } + (if (l.contains('?')) "?" + l.substringAfter('?') else "") }
-                        pendingName = null
-                        val full = resolve(plUrl, u)
-                        val key = full.substringBefore('?')
-                        if (!seen.add(key)) continue
-                        if (!initDone && seen.size > 1) { /* 시작정보 없이 받는 형식 */ }
+                        // 통째 조각만 받음: 암호 주소 줄 바로 다음 줄이 실제 조각 줄(# 아님)인 것
+                        if (!l.startsWith("#EXT-X-MOUFLON:URI:")) continue
+                        val next = ls.getOrNull(idx + 1)?.trim() ?: continue
+                        if (next.startsWith("#")) continue
+                        val encUrl = l.removePrefix("#EXT-X-MOUFLON:URI:").trim()
+                        val full = decodeUrl(encUrl, ks)
+                        if (full == null) { codes["풀기 실패"] = (codes["풀기 실패"] ?: 0) + 1; continue }
+                        if (!initDone) continue
+                        if (!seen.add(full.substringBefore('?'))) continue
                         val sr = try { get(full, headers) } catch (e: Exception) { null }
                         val c = "조각 ${sr?.code ?: "오류"}"
                         codes[c] = (codes[c] ?: 0) + 1
                         if (sr != null && sr.code in 200..299) {
-                            if (segOk == 0) add(sec, "첫 조각: ${full.take(200)} · ${sr.body.size}바이트 · 앞부분 상자: " + boxes(sr.body))
+                            if (segOk == 0) add(sec, "첫 조각: ${full.substringAfterLast('/')} · ${sr.body.size}바이트 · 상자: " + boxes(sr.body))
                             fos.write(sr.body); bytes += sr.body.size; segOk++
                         } else if ((codes[c] ?: 0) <= 2) add(sec, "조각 실패 ${sr?.code}: ${full.take(200)}")
                     }
-                    Thread.sleep(1000)
+                    // 앱 혼자 받을 때 실제 부담(이 시험 스레드만)
+                    Thread.sleep(1500)
                 }
             } catch (e: Exception) {
                 add(sec, "중단: ${e.message}")
@@ -272,9 +283,10 @@ object Lab {
                 try { fos.close() } catch (_: Exception) {}
             }
             val cpuMs = android.os.Process.getElapsedCpuTime() - cpu0
+            val myCpu = android.os.SystemClock.currentThreadTimeMillis() - tcpu0
             val secs = (System.currentTimeMillis() - t0) / 1000.0
             add(sec, "결과: 조각 ${segOk}개 · ${bytes / 1024}KB · 목록 ${polls}번 읽음(실패 $listFail) · 응답 $codes")
-            add(sec, "자원: 앱 전체 CPU ${cpuMs}ms / ${"%.0f".format(secs)}초 (다른 녹화 포함) · " + memText(ctx))
+            add(sec, "자원: 이 직접 받기만 CPU ${myCpu}ms / ${"%.0f".format(secs)}초 (= ${"%.1f".format(myCpu / 10.0 / secs)}%) · 비교: 앱 전체(숨은 재생기 포함) ${cpuMs}ms (= ${"%.0f".format(cpuMs / 10.0 / secs)}%) · " + memText(ctx))
             add(sec, "저장: ${out.name} (" + (if (segOk > 0) "동영상 앱으로 열어 재생되는지 확인해 주세요" else "받은 게 없음") + ")")
             Saver.scan(ctx, out.absolutePath)
             progress[pk] = "끝 · 조각 ${segOk}개 · ${bytes / 1024}KB" + (if (segOk == 0) " (실패)" else "")
@@ -305,6 +317,34 @@ object Lab {
             i += size; n++
         }
         return sb.toString().ifEmpty { "알 수 없음" }
+    }
+
+    // ---------- 1-2) 방송 대기 확인: 방송 서버의 목록(master) 주소만 가볍게 물어보기 ----------
+    /** 재생기 원본에서 본 master 주소로 확인 (방송 중이면 200, 꺼지면 다른 응답이 나오는지) */
+    fun masterCheckTest(ctx: Context, extraIds: List<String>, done: () -> Unit) {
+        val sec = "방송 서버로 직접 확인 시험"
+        running++
+        progress["①-2 방송 서버 확인"] = "확인 중…"
+        Thread {
+            val list = ArrayList<Pair<String, String>>()
+            probes.values.forEach { p -> if (p.masterUrl.isNotEmpty()) list.add(p.name to p.masterUrl) }
+            // 같은 형식에 있지 않을 번호(꺼진 방송 흉내)도 비교
+            extraIds.forEach { id -> list.add("번호 $id" to "https://edge-hls.doppiocdn.org/hls/$id/master/${id}_auto.m3u8?playlistType=lowLatency") }
+            val h = mapOf("Origin" to "https://ko.stripchat.com", "Referer" to "https://ko.stripchat.com/", "Accept" to "*/*")
+            val t0 = System.currentTimeMillis()
+            for ((n, u) in list) {
+                val s0 = System.currentTimeMillis()
+                val r = try { get(u, h) } catch (e: Exception) { null }
+                val t = r?.body?.let { String(it) } ?: ""
+                val variants = Regex("""NAME="([^"]+)"""").findAll(t).map { it.groupValues[1] }.toList()
+                add(sec, "$n → ${r?.code ?: "오류"} · ${System.currentTimeMillis() - s0}ms · ${r?.body?.size ?: 0}바이트 · 화질: ${variants.joinToString(",").ifEmpty { "-" }}" +
+                    (if (r != null && r.code !in 200..299) " · 원본: " + t.take(200).replace('\n', ' ') else ""))
+            }
+            add(sec, "끝: ${list.size}개 ${System.currentTimeMillis() - t0}ms")
+            progress["①-2 방송 서버 확인"] = "끝 · ${list.size}개"
+            running--
+            main.post(done)
+        }.start()
     }
 
     // ---------- 1) 방송 대기 확인: 창 하나로 여러 명 ----------

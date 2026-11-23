@@ -752,7 +752,7 @@ class MainActivity : Activity() {
     /** 실험판: 숨은 재생기 없이 가볍게 받기 시험 */
     private fun showLab() {
         val items = arrayOf(
-            "① 방송 대기 확인 시험 (등록·즐겨찾기 전부)",
+            "① 방송 대기 확인 시험 (방송 서버로 직접)",
             "② 직접 받기 시험 (녹화 중인 방송, 90초)",
             "③ 결과 복사 (붙여넣어 보내 주세요)",
             "진행 상황 보기",
@@ -766,7 +766,8 @@ class MainActivity : Activity() {
                         RecordService.list().forEach { sl -> Names.streamerFromUrl(sl.pageUrl).takeIf { it.isNotEmpty() }?.let { names.add(it); host = sl.host } }
                         Bookmarks.list(this).forEach { b -> if (b.url.contains("stripchat")) Names.streamerFromUrl(b.url).takeIf { it.isNotEmpty() }?.let { names.add(it) } }
                         Toast.makeText(this, "${names.size}명 확인 시작… 끝나면 알려 드려요", Toast.LENGTH_SHORT).show()
-                        Lab.checkerTest(this, host, names.toList(), web.settings.userAgentString) {}
+                        // 사이트 정보 주소는 막힘(418)이 확인돼서, 방송 서버 목록 주소로 확인. 꺼진 방송 비교용 번호 2개 포함
+                        Lab.masterCheckTest(this, listOf("1000001", "262938061")) {}
                         showLabProgress()
                     }
                     1 -> {
