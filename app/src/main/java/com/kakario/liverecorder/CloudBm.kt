@@ -182,7 +182,9 @@ object CloudBm {
         val p = prefs(ctx)
         val viewer = viewer(ctx)
         val download = !recordHere(ctx) && !viewer
-        val dirty = p.getBoolean("dirty", false) && !download
+        // 예전 판은 자동 켬/끔을 빼고 올렸음 → 이번 판에서 녹화폰이 한 번 다시 올림
+        val fmtOld = !viewer && !download && p.getInt("fmt", 0) < 2
+        val dirty = (p.getBoolean("dirty", false) || fmtOld) && !download
         try {
             val ver = p.getLong("ver", 0)
             val r = get("$base?v=$ver")
@@ -208,7 +210,11 @@ object CloudBm {
                 return lastResult
             }
 
-            var merged = if (r.optBoolean("same")) local else Bookmarks.merge(local, remoteB)
+            var merged = when {
+                r.optBoolean("same") -> local
+                viewer && !dirty -> remoteB          // 뷰어: 녹화폰 기준 그대로 (거울)
+                else -> Bookmarks.merge(local, remoteB)
+            }
             // 녹화폰: 뷰어에서 새로 들어온 즐겨찾기는 바로 '생방 대기'로
             val had = local.map { it.url }.toSet()
             val fresh = merged.filter { !it.del && !it.watch && it.url !in had }.map { it.url }.toSet()
@@ -234,7 +240,7 @@ object CloudBm {
             if (dirty || remote == null || out != remote.toString()) {
                 newVer = post(base, out).optLong("ver", remoteVer)
             }
-            p.edit().putLong("ver", newVer).putBoolean("dirty", false).apply()
+            p.edit().putLong("ver", newVer).putBoolean("dirty", false).putInt("fmt", 2).apply()
             lastResult = "맞춤 완료 (즐겨찾기 ${merged.count { !it.del }}개)"
         } catch (e: Exception) {
             lastResult = "맞추기 실패: ${e.message ?: e.javaClass.simpleName}"
