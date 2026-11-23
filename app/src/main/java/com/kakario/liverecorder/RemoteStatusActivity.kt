@@ -76,6 +76,12 @@ class RemoteStatusActivity : Activity() {
         root.addView(info)
         listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), dp(12)) }
         root.addView(ScrollView(this).apply { addView(listBox) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        val bottom = LinearLayout(this).apply { setPadding(dp(8), dp(4), dp(8), dp(4)); setBackgroundColor(Color.WHITE) }
+        bottom.addView(Button(this).apply {
+            text = "지금 보는 방송 녹화 (녹화폰에서)"; isAllCaps = false
+            setOnClickListener { setResult(RESULT_OK, Intent().putExtra("action", "add")); finish() }
+        }, LinearLayout.LayoutParams(-1, -2))
+        root.addView(bottom)
         setContentView(root)
     }
 
