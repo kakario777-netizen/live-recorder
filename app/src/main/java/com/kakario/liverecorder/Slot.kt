@@ -446,6 +446,16 @@ class Slot(
     @Volatile private var apiWarned = false
     @Volatile private var liveApiOk = false
     @Volatile private var lastLive = false
+    @Volatile private var retryRequested = false
+
+    /** 사용자가 누른 '지금 다시 시도': 재생기를 새로 만들어 바로 다시 연다 (같은 파일에 이어서) */
+    fun retryNow() {
+        log("직접 다시 시도 → 재생기 새로 열기")
+        liveSeenAt = System.currentTimeMillis()   // 3분 동안은 30초마다 계속 다시 열어 봄
+        retryRequested = true
+        destroyPlayer()
+        main.post { if (!stopFlag && web == null) createPlayer() }
+    }
     /** 가벼운 확인에서 '방송 중'이 마지막으로 나온 시각 — 이 뒤 3분은 재생기를 없애지 않고 30초마다 다시 열어 봄 */
     @Volatile private var liveSeenAt = 0L
     private var lastFullCheck = System.currentTimeMillis()
@@ -686,6 +696,7 @@ class Slot(
             while (!stopFlag) {
                 val c = q.poll(1, TimeUnit.SECONDS)
                 val now = System.currentTimeMillis()
+                if (retryRequested) { retryRequested = false; lastReload = now; sleeping = false }
                 if (c == null) {
                     // 순서 대기: 자리가 나면 다시 열어서 시작
                     if (queued) {

@@ -570,6 +570,15 @@ class MainActivity : Activity() {
                 val tv = TextView(this).apply { textSize = 13f; setTextColor(Color.parseColor("#222222")) }
                 rows[sl.id] = tv
                 row.addView(tv, LinearLayout.LayoutParams(0, -2, 1f))
+                row.addView(btn("다시 시도", Color.parseColor("#1565C0")) {
+                    val go = {
+                        sl.retryNow()
+                        Toast.makeText(this, "${sl.id}번 다시 여는 중 (같은 파일에 이어서 녹화)", Toast.LENGTH_SHORT).show()
+                    }
+                    if (sl.state == "녹화 중") AlertDialog.Builder(this).setMessage("지금 잘 받는 중이에요. 그래도 다시 열까요? (몇 초 빠질 수 있어요)")
+                        .setPositiveButton("다시 열기") { _, _ -> go() }.setNegativeButton("취소", null).show()
+                    else go()
+                })
                 row.addView(btn("중지", Color.parseColor("#D32F2F")) {
                     AlertDialog.Builder(this).setMessage("${sl.id}번 녹화를 멈출까요? 지금까지 녹화한 건 저장돼요.")
                         .setPositiveButton("중지") { _, _ -> RecordService.stopOne(this, sl.id) }
