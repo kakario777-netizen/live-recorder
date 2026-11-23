@@ -44,6 +44,32 @@ object Mp4 {
         return out
     }
 
+    /**
+     * 시작 정보에서 '영상·소리 형식(stsd)' 부분만 뽑아 이어 붙인 것.
+     * 만든 시각 같은 기록 값은 빼고 실제 형식만 비교하려고 쓴다.
+     */
+    private fun formatKey(b: ByteArray): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        var i = 4
+        while (i + 4 <= b.size) {
+            if (b[i] == 's'.code.toByte() && b[i + 1] == 't'.code.toByte() && b[i + 2] == 's'.code.toByte() && b[i + 3] == 'd'.code.toByte()) {
+                val start = i - 4
+                val size = ((b[start].toInt() and 0xff) shl 24) or ((b[start + 1].toInt() and 0xff) shl 16) or
+                    ((b[start + 2].toInt() and 0xff) shl 8) or (b[start + 3].toInt() and 0xff)
+                if (size in 8..(b.size - start)) { out.write(b, start, size); i = start + size; continue }
+            }
+            i++
+        }
+        return out.toByteArray()
+    }
+
+    /** 두 시작 정보가 같은 형식(코덱 설정)인지 */
+    fun sameFormat(a: ByteArray, b: ByteArray): Boolean {
+        if (a.contentEquals(b)) return true
+        val ka = formatKey(a); val kb = formatKey(b)
+        return ka.isNotEmpty() && ka.contentEquals(kb)
+    }
+
     /** 파일 맨 앞의 시작 정보(첫 moof 전까지) */
     fun initOf(file: File): ByteArray? = try {
         RandomAccessFile(file, "r").use { raf ->
@@ -59,7 +85,7 @@ object Mp4 {
     /** 이어 쓸 때: 새 시작 정보가 파일 맨 앞 것과 똑같으면 다시 쓸 필요 없음 */
     fun sameInit(file: File, init: ByteArray): Boolean {
         val cur = initOf(file) ?: return false
-        return cur.contentEquals(init)
+        return sameFormat(cur, init)
     }
 
     /**
@@ -80,7 +106,7 @@ object Mp4 {
                         if (first == null) {
                             if (b.type == "ftyp") firstFtyp = bytes else firstMoov = bytes
                             out.write(bytes)
-                        } else if (first.contentEquals(bytes)) {
+                        } else if (b.type == "ftyp" || sameFormat(first, bytes)) {
                             removed++
                         } else {
                             out.write(bytes)  // 화질이 바뀌어 내용이 다른 시작 정보는 그대로 둠
