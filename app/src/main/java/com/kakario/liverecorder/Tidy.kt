@@ -22,7 +22,7 @@ import java.io.File
  * 앱 전용 작업 공간에서 만든 뒤, 성공하면 원래 파일 자리에 완성본으로 바꿔 넣는다.
  */
 object Tidy {
-    class Job(val name: String, val path: String?, val uri: Uri?, val streamer: String = "")
+    class Job(val name: String, val path: String?, val uri: Uri?, val streamer: String = "", var force: Boolean = false)
 
     private val queue = ArrayDeque<Job>()
     /** H.264라 변환해야 하는데 충전 중이 아니어서 기다리는 파일 (업로드도 안 함) */
@@ -73,6 +73,7 @@ object Tidy {
             }
         }
         if (android.os.Build.VERSION.SDK_INT >= 33) app.registerReceiver(r, f, Context.RECEIVER_NOT_EXPORTED) else app.registerReceiver(r, f)
+        ensureThread()
         if (!loaded) {
             loaded = true
             try {
@@ -118,6 +119,7 @@ object Tidy {
         if (thread == null) {
             thread = HandlerThread("tidy").also { it.start() }
             handler = Handler(thread!!.looper)
+            handler?.postDelayed(chargeCheck, 60_000)
         }
     }
 
@@ -127,9 +129,34 @@ object Tidy {
     /** H.264로 녹화된 파일은 정리하면서 H.265로 변환 (기본 켜짐, 충전 중일 때만) */
     fun autoH265(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("autoH265", true)
 
+    /**
+     * 충전기가 꽂혀 있는지 — '충전 중'이 아니라 '꽂혀 있음'으로 판단.
+     * (배터리 보호 85%·100% 완충이면 꽂혀 있어도 충전이 멈춰서 '충전 중 아님'으로 나오기 때문)
+     */
     private fun charging(ctx: Context): Boolean {
-        val bm = ctx.getSystemService(android.os.BatteryManager::class.java)
-        return bm?.isCharging == true
+        val i = ctx.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+        return (i?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+    }
+
+    /** 파일 목록 '지금 변환': 충전과 상관없이 바로 변환 */
+    fun forceNow(ctx: Context, name: String) {
+        val app = ctx.applicationContext
+        val job = synchronized(queue) { waitCharge.firstOrNull { it.name == name }?.also { waitCharge.remove(it) } } ?: return
+        job.force = true
+        synchronized(queue) { queue.addFirst(job) }
+        RecordService.addLog("지금 변환 (충전 상관없이): $name")
+        persist(); onChange?.invoke()
+        ensureThread()
+        handler?.post { if (current == null) next(app) }
+    }
+
+    /** 충전 대기 파일이 있으면 1분마다 충전기 확인 (꽂힌 채로 대기에 들어간 경우 대비) */
+    private val chargeCheck = object : Runnable {
+        override fun run() {
+            val ctx = appCtx ?: return
+            if (synchronized(queue) { waitCharge.isNotEmpty() } && charging(ctx)) onPowerConnected(ctx)
+            handler?.postDelayed(this, 60_000)
+        }
     }
 
     fun statusOf(name: String): String? = when {
@@ -208,7 +235,7 @@ object Tidy {
         // H.264면 정리하면서 H.265로 변환 (충전 중일 때만, 하드웨어 인코더 있을 때만)
         val mime = Codec.probeUri(ctx, input)
         converting = autoH265(ctx) && mime == android.media.MediaFormat.MIMETYPE_VIDEO_AVC && Codec.phoneHasHevcEncoder()
-        if (converting && !charging(ctx)) {
+        if (converting && !job.force && !charging(ctx)) {
             // H.264는 변환 없이 올리지 않음: 충전기를 꽂을 때까지 기다림
             converting = false
             dedupUsed?.delete(); dedupUsed = null

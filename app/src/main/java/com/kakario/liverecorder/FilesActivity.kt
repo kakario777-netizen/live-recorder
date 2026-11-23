@@ -159,6 +159,13 @@ class FilesActivity : Activity() {
                     setTextColor(Color.parseColor(if (recording) "#D32F2F" else "#1565C0"))
                     setPadding(dp(8), 0, dp(8), 0)
                 })
+                if (tidyState?.startsWith("충전 대기") == true) {
+                    row.addView(Button(this).apply {
+                        text = "지금 변환"; isAllCaps = false; textSize = 13f
+                        setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#D32F2F"))
+                        setOnClickListener { Tidy.forceNow(this@FilesActivity, item.name); render() }
+                    })
+                }
                 listBox.addView(row)
                 listBox.addView(android.view.View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")) }, LinearLayout.LayoutParams(-1, 1))
                 return@forEach
