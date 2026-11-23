@@ -62,6 +62,13 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="live stream recording" />
         </service>
+        <service
+            android:name=".PushService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
         <receiver android:name=".InstallResultReceiver" android:exported="false" />
         <receiver android:name=".UpdatedReceiver" android:exported="false">
             <intent-filter>

@@ -52,7 +52,8 @@ object CloudBm {
         Thread({
             while (true) {
                 try { if (on(app)) sync(app) } catch (_: Exception) {}
-                try { Thread.sleep(30_000) } catch (_: InterruptedException) { break }
+                // 푸시가 되면 바뀔 때 바로 오니 10분마다 확인만 (빠진 푸시 대비), 안 되면 30초마다
+                try { Thread.sleep(if (Push.ready) 10 * 60_000L else 30_000L) } catch (_: InterruptedException) { break }
             }
         }, "cloudBm").apply { isDaemon = true }.start()
     }

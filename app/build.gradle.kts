@@ -58,4 +58,6 @@ dependencies {
     implementation("commons-net:commons-net:3.11.1")
     // 채팅 직접 받기(웹소켓)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // 즐겨찾기 바뀜 알림(파이어베이스 푸시)
+    implementation("com.google.firebase:firebase-messaging:24.1.0")
 }
