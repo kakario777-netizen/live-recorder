@@ -1137,41 +1137,54 @@ class MainActivity : Activity() {
     private fun showCloudBm() {
         val ctx = this@MainActivity
         val h0 = android.os.Handler(android.os.Looper.getMainLooper())
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(8), dp(18), 0) }
-        box.addView(TextView(this).apply {
-            textSize = 13f
-            text = "즐겨찾기는 메인 구글 계정 드라이브에 저장되고, 한 폰에서 바꾸면 다른 폰이 바로 받아요.\n\n" +
-                "녹화폰: 생방 대기 녹화를 하고, 녹화·업로드가 끝나면 원격폰에 알림을 보내요. 다른 폰에서 추가한 즐겨찾기는 자동으로 생방 대기가 돼요.\n" +
-                "원격폰: 즐겨찾기는 같이 맞추지만 녹화는 이 폰에서 따로 해요(생방 대기 표시도 폰마다 따로). 녹화폰의 알림을 받아 알림창과 업로드 기록에 남기고, 이 폰은 알림을 보내지 않아요.\n\n" +
-                "맞추기 상태: " + CloudBm.lastResult.ifEmpty { "준비 중" } + (if (Push.ready) " · 푸시 연결됨" else " · 푸시 연결 전")
-        })
-        val group = android.widget.RadioGroup(this)
-        val rRec = android.widget.RadioButton(this).apply { id = View.generateViewId(); text = "이 폰은 녹화폰" }
-        val rRem = android.widget.RadioButton(this).apply { id = View.generateViewId(); text = "이 폰은 원격폰" }
-        group.addView(rRec); group.addView(rRem)
-        group.check(if (CloudBm.recordHere(ctx)) rRec.id else rRem.id)
-        box.addView(group)
-        val vw = CheckBox(this).apply {
-            text = "원격폰은 뷰어 모드 (이 폰은 녹화 안 함 · 녹화 버튼은 녹화폰에 부탁)\n끄면 다운로드 모드: 이 폰에서도 따로 녹화"
-            isChecked = ctx.getSharedPreferences("cloudBm", MODE_PRIVATE).getBoolean("viewer", true)
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(4), 0, dp(6)) }
+        fun section(t: String) = box.addView(TextView(ctx).apply { text = t; textSize = 12f; setTypeface(null, Typeface.BOLD); setTextColor(Color.parseColor("#1565C0")); setPadding(dp(22), dp(14), dp(22), dp(4)) })
+        fun note(t: String) = box.addView(TextView(ctx).apply { text = t; textSize = 12f; setTextColor(Color.parseColor("#777777")); setPadding(dp(22), 0, dp(22), dp(6)) })
+        fun line() = box.addView(View(ctx).apply { setBackgroundColor(Color.parseColor("#E6E6E6")) }, LinearLayout.LayoutParams(-1, 1).apply { setMargins(dp(22), dp(4), dp(22), dp(4)) })
+        fun toggle(title: String, sub: String, on: Boolean, enabled: Boolean = true): android.widget.Switch {
+            val r = LinearLayout(ctx).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(22), dp(8), dp(14), dp(8)) }
+            val texts = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+            texts.addView(TextView(ctx).apply { text = title; textSize = 16f; setTextColor(Color.parseColor(if (enabled) "#222222" else "#AAAAAA")) })
+            if (sub.isNotEmpty()) texts.addView(TextView(ctx).apply { text = sub; textSize = 12f; setTextColor(Color.parseColor("#888888")) })
+            r.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+            val sw = android.widget.Switch(ctx).apply { isChecked = on; isEnabled = enabled }
+            r.addView(sw); r.setOnClickListener { if (sw.isEnabled) sw.toggle() }
+            box.addView(r); return sw
         }
-        box.addView(vw)
-        group.setOnCheckedChangeListener { _, id -> vw.isEnabled = id == rRem.id }
-        vw.isEnabled = !CloudBm.recordHere(ctx)
-        val nt = CheckBox(this).apply { text = "녹화폰 ↔ 원격폰 알림 사용 (녹화 완료 · 업로드 완료)"; isChecked = CloudBm.notifyOn(ctx) }
-        box.addView(nt)
+        val other = CloudBm.lockedByOther(ctx); val mine = CloudBm.confirmed(ctx)
+
+        section("이 폰 역할")
+        val recSw = toggle("녹화폰으로 확정", when {
+            other -> "'${CloudBm.recName(ctx)}'가 녹화폰으로 확정돼 있어요. 바꾸려면 그 폰에서 확정을 꺼 주세요."
+            mine -> "이 폰이 녹화폰이에요. 끄면 다른 폰을 녹화폰으로 정할 수 있어요."
+            else -> "한 대만 녹화폰이 돼요. 켜면 나머지 폰은 모두 원격폰(뷰어)이 돼요."
+        }, mine || (CloudBm.recordHere(ctx) && !other), enabled = !other)
+        line()
+        val vwSw = toggle("원격폰 뷰어 모드", "켜면 녹화폰 화면을 그대로 보고, 여기서 하는 건 녹화폰에 적용돼요. 끄면 다운로드 모드(이 폰 화면, 이 폰에서 직접 녹화 · 생방 대기는 없음).",
+            ctx.getSharedPreferences("cloudBm", MODE_PRIVATE).getBoolean("viewer", true), enabled = !recSw.isChecked)
+        recSw.setOnCheckedChangeListener { _, v -> vwSw.isEnabled = !v }
+
+        section("알림")
+        val ntSw = toggle("녹화폰 → 원격폰 알림", "녹화 완료 · 업로드 완료를 원격폰 알림창과 업로드 기록에", CloudBm.notifyOn(ctx))
+
+        section("상태")
+        note("즐겨찾기는 메인 구글 계정 드라이브에 저장돼요.\n" + CloudBm.lastResult.ifEmpty { "맞추기 준비 중" } + (if (Push.ready) " · 푸시 연결됨" else " · 푸시 연결 전"))
+
         AlertDialog.Builder(this)
             .setTitle("폰 역할 · 즐겨찾기 맞추기")
             .setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("저장") { _, _ ->
-                val rec = group.checkedRadioButtonId == rRec.id
-                CloudBm.setRecordHere(ctx, rec)
-                CloudBm.setNotifyOn(ctx, nt.isChecked)
-                CloudBm.setViewer(ctx, vw.isChecked)
+                val rec = recSw.isChecked && !other
+                if (rec != mine) CloudBm.setConfirm(ctx, rec)
+                ctx.getSharedPreferences("cloudBm", MODE_PRIVATE).edit().putBoolean("recordHere", rec).apply()
+                CloudBm.setNotifyOn(ctx, ntSw.isChecked)
+                CloudBm.setViewer(ctx, vwSw.isChecked)
                 if (Watcher.any(ctx)) RecordService.startWatch(ctx)
-                h0.postDelayed({ saveTabs(); recreate() }, 300)   // 뷰어/다운로드 색·화면 바로 바꾸기
-                Toast.makeText(ctx, if (rec) "이 폰은 녹화폰이에요" else if (vw.isChecked) "원격폰 · 뷰어 모드 (녹화는 녹화폰에서)" else "원격폰 · 다운로드 모드 (이 폰에서도 따로 녹화)", Toast.LENGTH_SHORT).show()
-                Thread { CloudBm.sync(applicationContext) }.start()
+                Toast.makeText(ctx, if (rec) "이 폰을 녹화폰으로 확정해요" else if (vwSw.isChecked) "원격폰 · 뷰어 모드" else "원격폰 · 다운로드 모드", Toast.LENGTH_SHORT).show()
+                Thread {
+                    val r = CloudBm.sync(applicationContext)
+                    runOnUiThread { if (r.contains("다른 폰")) Toast.makeText(ctx, "다른 폰이 이미 녹화폰으로 확정돼 있어서 이 폰은 뷰어예요", Toast.LENGTH_LONG).show(); saveTabs(); recreate() }
+                }.start()
             }
             .setNeutralButton("지금 맞추기") { _, _ ->
                 Thread { val r = CloudBm.sync(applicationContext); runOnUiThread { Toast.makeText(ctx, r, Toast.LENGTH_LONG).show() } }.start()

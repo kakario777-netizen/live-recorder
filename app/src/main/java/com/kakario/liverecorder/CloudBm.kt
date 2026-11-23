@@ -32,7 +32,7 @@ object CloudBm {
     fun setUrl(ctx: Context, u: String) = prefs(ctx).edit().putString("url", u.trim()).putLong("ver", 0).putBoolean("dirty", true).apply()
     /** 녹화폰(true): 생방 대기 녹화 + 원격폰에 알림 보냄 / 원격폰(false): 즐겨찾기만 맞추고 알림을 받음 */
     fun recordHere(ctx: Context) = prefs(ctx).getBoolean("recordHere", true)
-    fun setRecordHere(ctx: Context, on: Boolean) { if (on != recordHere(ctx)) prefs(ctx).edit().putBoolean("recordHere", on).putLong("ver", 0).putBoolean("dirty", false).apply() }
+    fun setRecordHere(ctx: Context, on: Boolean) { if (on && lockedByOther(ctx)) return; if (!on && confirmed(ctx)) return; if (on != recordHere(ctx)) prefs(ctx).edit().putBoolean("recordHere", on).putLong("ver", 0).putBoolean("dirty", false).apply() }
 
     @Volatile var lastResult = ""; private set
 
@@ -40,6 +40,14 @@ object CloudBm {
         val p = prefs(ctx)
         return p.getString("dev", null) ?: java.util.UUID.randomUUID().toString().take(8).also { p.edit().putString("dev", it).apply() }
     }
+    // ---------- 녹화폰 확정 (한 대만) ----------
+    fun recId(ctx: Context) = prefs(ctx).getString("recId", "") ?: ""
+    fun recName(ctx: Context) = prefs(ctx).getString("recName", "") ?: ""
+    fun confirmed(ctx: Context) = recId(ctx).isNotEmpty() && recId(ctx) == deviceId(ctx)
+    fun lockedByOther(ctx: Context) = recId(ctx).isNotEmpty() && recId(ctx) != deviceId(ctx)
+    /** 확정 켜기/끄기 부탁 → 다음 맞추기 때 저장소에 반영 (다른 폰이 이미 확정이면 실패) */
+    fun setConfirm(ctx: Context, on: Boolean) { prefs(ctx).edit().putInt("wantRec", if (on) 1 else 0).putBoolean("dirty", true).apply() }
+
     fun notifyOn(ctx: Context) = prefs(ctx).getBoolean("notify", true)
     /** 원격폰 뷰어 모드: 이 폰은 녹화 안 함 (녹화 버튼은 녹화폰에 부탁) */
     fun viewer(ctx: Context) = !recordHere(ctx) && prefs(ctx).getBoolean("viewer", true)
@@ -202,6 +210,29 @@ object CloudBm {
             val remoteB = remote?.optJSONArray("b")?.let { runCatching { Bookmarks.fromJson(it) }.getOrNull() } ?: emptyList()
             val remoteC = remote?.optJSONArray("c")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
 
+            // 녹화폰 확정: 저장소에 한 대만. 다른 폰이 확정이면 이 폰은 녹화폰이 될 수 없음
+            val rr = remote?.optJSONObject("rec"); val rid = rr?.optString("id").orEmpty(); val rname = rr?.optString("name").orEmpty()
+            val me = deviceId(ctx)
+            var recIdNow = rid; var recNameNow = rname
+            when (p.getInt("wantRec", -1)) {
+                1 -> if (rid.isEmpty() || rid == me) { recIdNow = me; recNameNow = android.os.Build.MODEL }
+                     else lastResult = "다른 폰($rname)이 이미 녹화폰으로 확정돼 있어요"
+                0 -> if (rid == me) { recIdNow = ""; recNameNow = "" }
+            }
+            val recChanged = recIdNow != rid
+            p.edit().putString("recId", recIdNow).putString("recName", recNameNow).putInt("wantRec", -1).apply()
+            if (recIdNow.isNotEmpty() && recIdNow != me && recordHere(ctx)) {
+                // 다른 폰이 녹화폰으로 확정됨 → 이 폰은 뷰어로
+                p.edit().putBoolean("recordHere", false).putBoolean("viewer", true).putLong("ver", 0).apply()
+                RecordService.addLog("다른 폰($recNameNow)이 녹화폰으로 확정돼서 이 폰은 뷰어로 바뀌었어요")
+                return@synchronized "다른 폰이 녹화폰 → 이 폰은 뷰어"
+            }
+            if (recChanged && (download || remote == null)) {
+                // 다운로드 모드는 원래 안 올리지만 확정 정보는 올려야 함
+                remote?.put("rec", JSONObject().put("id", recIdNow).put("name", recNameNow))
+                post(base, (remote ?: JSONObject()).toString())
+            }
+
             if (download) {
                 // 다운로드 모드: 녹화폰 즐겨찾기를 이 폰에 '복사만' (새로 생긴 것만 더함, 올리지 않음)
                 val have = local.map { it.url }.toSet()
@@ -241,6 +272,7 @@ object CloudBm {
             }
             val sOut = JSONObject().put("chatKoreanOnly", ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean(chatKey(ctx), true))
             val out = JSONObject().put("b", Bookmarks.toJson(merged)).put("c", JSONArray(cats))
+                .put("rec", JSONObject().put("id", recIdNow).put("name", recNameNow))
                 .put("s", sOut).put("st", maxOf(p.getLong(stKey(ctx), 0), rst)).toString()
             var newVer = remoteVer
             if (dirty || remote == null || out != remote.toString()) {
