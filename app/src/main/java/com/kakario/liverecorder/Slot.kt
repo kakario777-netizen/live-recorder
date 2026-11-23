@@ -258,7 +258,9 @@ class Slot(
                     if (attached) try { ctx.getSystemService(WindowManager::class.java).removeView(view) } catch (_: Exception) {}
                     try { view.destroy() } catch (_: Exception) {}
                     web = null
-                    main.postDelayed({ if (!stopFlag) createPlayer() }, 2000)
+                    // 엔진이 죽으면 모든 재생기가 같이 죽음 → 한꺼번에 다시 열면 또 버거우니 차례로
+                    val wait = (if (out != null || canAppend()) 2000L else 8000L) + (id % 16) * 2500L
+                    main.postDelayed({ if (!stopFlag && web == null) createPlayer() }, wait)
                 }
                 return true
             }
@@ -443,6 +445,9 @@ class Slot(
      */
     @Volatile private var apiWarned = false
     @Volatile private var liveApiOk = false
+    @Volatile private var lastLive = false
+    /** 가벼운 확인에서 '방송 중'이 마지막으로 나온 시각 — 이 뒤 3분은 재생기를 없애지 않고 30초마다 다시 열어 봄 */
+    @Volatile private var liveSeenAt = 0L
     private var lastFullCheck = System.currentTimeMillis()
     private fun liveCheck(): Boolean? {
         if (!host.contains("stripchat")) return null
@@ -454,14 +459,17 @@ class Slot(
                 return null
             }
             val t = String(r.body)
+            // 방송 상태 글자(status)를 먼저 보고, 없을 때만 isLive를 봄
+            val st = Regex("\"status\"\\s*:\\s*\"(\\w+)\"").find(t)?.groupValues?.get(1)?.lowercase()
             val res: Boolean? = when {
+                st != null -> st !in setOf("off", "idle", "offline")
                 t.contains("\"isLive\":true") -> true
                 t.contains("\"isLive\":false") -> false
-                else -> {
-                    val st = Regex("\"status\"\\s*:\\s*\"(\\w+)\"").find(t)?.groupValues?.get(1)?.lowercase()
-                    when (st) { null -> null; "off", "idle", "offline" -> false; else -> true }
-                }
+                else -> null
             }
+            if (res == true && !lastLive) log("방송 켜짐 확인(" + (st ?: "isLive") + ") → 재생기 열기")
+            lastLive = res == true
+            if (res == true) liveSeenAt = System.currentTimeMillis()
             if (res != null && !liveApiOk) { liveApiOk = true; log("가벼운 방송 확인 사용: " + (if (res) "방송 중" else "꺼짐")) }
             res
         } catch (e: Exception) {
@@ -719,17 +727,19 @@ class Slot(
                         })
                         // 업데이트·오류 직후 쓰던 파일이 있으면: 15초마다 빨리 다시 확인 (페이지를 비우지 않음)
                         val resuming = out == null && canAppend()
-                        val interval = if (everRecorded) PAUSE_CHECK_MS else if (resuming) RESUME_CHECK_MS else START_WAIT_CHECK_MS
-                        if (now - lastReload > (if (waitingStart && !resuming && liveApiOk) LIGHT_CHECK_MS else interval)) {
+                        val liveNow = now - liveSeenAt < 3 * 60_000L
+                        val interval = if (everRecorded || liveNow) PAUSE_CHECK_MS else if (resuming) RESUME_CHECK_MS else START_WAIT_CHECK_MS
+                        if (now - lastReload > (if (waitingStart && !resuming && !liveNow && liveApiOk) LIGHT_CHECK_MS else interval)) {
                             lastReload = now
                             // 방송 대기: 먼저 가볍게 물어보고, 꺼져 있으면 페이지를 열지 않음
                             val live = if (waitingStart && !resuming) liveCheck() else null
                             // 혹시 몰라 10분마다 한 번은 실제 페이지로도 확인
-                            if (live == false && now - lastFullCheck < 10 * 60_000L) continue
+                            if (live == false && now - lastFullCheck < 5 * 60_000L) continue
+                            if (liveNow && live != false) log("방송 중인데 영상이 아직 안 나옴 → 다시 열기 (티켓방·로딩 지연일 수 있음)")
                             lastFullCheck = now
                             sleeping = false
                             reloadPlayer()
-                        } else if (waitingStart && !resuming && !sleeping && now - lastReload > 40_000) {
+                        } else if (waitingStart && !resuming && !liveNow && !sleeping && now - lastReload > 40_000) {
                             // 방송 대기: 확인할 때만 잠깐 열고, 평소엔 비워 둠
                             sleeping = true
                             sleepPlayer()
