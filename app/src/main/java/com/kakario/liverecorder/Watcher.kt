@@ -121,7 +121,8 @@ object Watcher {
         var ok = 0; var fail = 0
         for (b in watched(ctx)) {
             if (!b.url.contains("stripchat") || idOf(ctx, b.url) != null) continue
-            val n = Names.streamerFromUrl(b.url).ifEmpty { continue }
+            val n = Names.streamerFromUrl(b.url)
+            if (n.isEmpty()) continue
             val id = askId("$apiBase/api/front/users/user-ids/" + java.net.URLEncoder.encode(n, "UTF-8"), hs)
             if (id != null) { learnId(ctx, b.url, id); ok++ } else { fail++; if (fail >= 3 && ok == 0) break }
             Thread.sleep(200)
