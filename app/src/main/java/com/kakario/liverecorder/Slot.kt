@@ -1061,6 +1061,7 @@ class Slot(
                     if (out != null && pauseKind != "ticket" &&
                         ((pauseKind == "ended" && idle > STALL_MS + 60_000) || idle > NEW_FILE_AFTER_MS)) {
                         log((if (pauseKind == "ended") "방송 종료 확인" else "${idle / 60000}분 넘게 끊김") + " → 파일 마무리 후 정리·업로드, 다음 방송은 새 파일로")
+                        if (bytes > 0) CloudBm.notifyRemote(ctx, "녹화 완료", "${streamer.ifEmpty { host }} · ${(now - recordStartAt) / 60000}분 · ${bytes / 1024 / 1024}MB")
                         closeBlurred()
                         closeChat()
                         try { out?.flush(); out?.close() } catch (_: Exception) {}

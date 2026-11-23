@@ -18,21 +18,42 @@ object CloudBm {
     }
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("cloudBm", Context.MODE_PRIVATE)
     /** 기본 주소 (내 구글 스크립트) — 두 폰 모두 설정 없이 바로 맞춰지게 앱에 넣어 둠 */
-    private val DEFAULT_URL: String by lazy {
-        try {
-            val k = "lrbm2026".toByteArray()
-            val b = android.util.Base64.decode("==QVXh0VCJDFBEGY1hmXk8FNOpWZnxRJEpxDZp3ADIhF541CbNmLPhAP+dURThBOl0DVxNXX+ACGvM0AzdHLWdBWOAnAFYQIL4QVLZVes0UADVUXCFFDP0VAZFlHXFQBdMQUcQkQEAREfkRHKEUHWYAB".reversed(), android.util.Base64.DEFAULT)
-            String(ByteArray(b.size) { (b[it].toInt() xor k[it % k.size].toInt()).toByte() })
-        } catch (e: Exception) { "" }
-    }
-    fun url(ctx: Context) = prefs(ctx).getString("url", null)?.takeIf { it.isNotBlank() } ?: DEFAULT_URL
+    private fun dec(e: String): String = try {
+        val k = "lrbm2026".toByteArray()
+        val b = android.util.Base64.decode(e.reversed(), android.util.Base64.DEFAULT)
+        String(ByteArray(b.size) { (b[it].toInt() xor k[it % k.size].toInt()).toByte() })
+    } catch (e: Exception) { "" }
+    /** 즐겨찾기 저장소: 메인 계정(777) 드라이브의 스크립트 */
+    private val DEFAULT_URL: String by lazy { dec("RkgTX9RRfkSFe93YCgGOSoxW7ZVC79zUwwVBxNXWOUFEa1XUqVFJtIUWDM2WERSPe4TcaxVdawiSUw1XjRHBQgTJZd1QF0BEF4QVLZVes0UADVUXCFFDP0VAZFlHXFQBdMQUcQkQEAREfkRHKEUHWYAB") }
+    /** 푸시 보내기 전용: 서버 계정(1004)의 스크립트 */
+    val RELAY_URL: String by lazy { dec("==QVXh0VCJDFBEGY1hmXk8FNOpWZnxRJEpxDZp3ADIhF541CbNmLPhAP+dURThBOl0DVxNXX+ACGvM0AzdHLWdBWOAnAFYQIL4QVLZVes0UADVUXCFFDP0VAZFlHXFQBdMQUcQkQEAREfkRHKEUHWYAB") }
+    fun url(ctx: Context) = prefs(ctx).getString("url", null)?.takeIf { it.isNotBlank() && it != RELAY_URL } ?: DEFAULT_URL
     fun on(ctx: Context) = url(ctx).startsWith("https://script.google.com/")
     fun setUrl(ctx: Context, u: String) = prefs(ctx).edit().putString("url", u.trim()).putLong("ver", 0).putBoolean("dirty", true).apply()
-    /** 이 폰에서 생방 대기(자동 녹화)를 할지 — 녹화 안 하는 폰은 꺼 둠 */
+    /** 녹화폰(true): 생방 대기 녹화 + 원격폰에 알림 보냄 / 원격폰(false): 즐겨찾기만 맞추고 알림을 받음 */
     fun recordHere(ctx: Context) = prefs(ctx).getBoolean("recordHere", true)
     fun setRecordHere(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("recordHere", on).apply()
 
     @Volatile var lastResult = ""; private set
+
+    fun deviceId(ctx: Context): String {
+        val p = prefs(ctx)
+        return p.getString("dev", null) ?: java.util.UUID.randomUUID().toString().take(8).also { p.edit().putString("dev", it).apply() }
+    }
+    fun notifyOn(ctx: Context) = prefs(ctx).getBoolean("notify", true)
+    fun setNotifyOn(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("notify", on).apply()
+
+    /** 녹화폰 → 원격폰 알림 (녹화 완료·업로드 완료 등) */
+    fun notifyRemote(ctx: Context, title: String, body: String) {
+        if (BuildConfig.LAB || !recordHere(ctx) || !notifyOn(ctx)) return
+        val app = ctx.applicationContext
+        Thread {
+            try {
+                val js = JSONObject().put("title", title).put("body", body).put("from", deviceId(app)).toString()
+                post("$RELAY_URL?notify=1", js)
+            } catch (_: Exception) {}
+        }.start()
+    }
     @Volatile private var loopOn = false
     private val lock = Object()
 

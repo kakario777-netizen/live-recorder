@@ -188,6 +188,19 @@ object Uploader {
         }
     }
 
+    /** 원격폰: 녹화폰에서 온 알림을 업로드 기록 목록에 남김 */
+    fun addNote(ctx: Context, title: String, body: String) {
+        val p = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
+        synchronized(this) {
+            val a = try { org.json.JSONArray(p.getString("uploadHistory", "[]")) } catch (e: Exception) { org.json.JSONArray() }
+            a.put(JSONObject().put("name", "[녹화폰] $title · $body").put("size", 0).put("time", System.currentTimeMillis()).put("dir", "녹화폰 알림"))
+            val out = org.json.JSONArray()
+            val from = (a.length() - 3000).coerceAtLeast(0)
+            for (i in from until a.length()) out.put(a.get(i))
+            p.edit().putString("uploadHistory", out.toString()).apply()
+        }
+    }
+
     fun history(ctx: Context): List<Hist> = try {
         val a = org.json.JSONArray(ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getString("uploadHistory", "[]"))
         (0 until a.length()).map { a.getJSONObject(it) }.map { Hist(it.optString("name"), it.optLong("size"), it.optLong("time"), it.optString("dir")) }
@@ -222,6 +235,8 @@ object Uploader {
             if (ok) {
                 lastResult = "업로드 완료: ${job.name}"
                 addHistory(ctx, job)
+                val mb = try { File(job.path).let { if (it.exists()) it.length() else File(trashDir(), it.name).length() } / 1024 / 1024 } catch (e: Exception) { 0L }
+                CloudBm.notifyRemote(ctx, "업로드 완료", "${job.name}" + (if (mb > 0) " (${mb}MB)" else ""))
                 RecordService.addLog("$lastResult (원본은 휴지통으로, ${TRASH_DAYS}일 뒤 삭제)")
             } else {
                 job.tries++

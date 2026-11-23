@@ -24,6 +24,7 @@ object Push {
                 .setGcmSenderId("968730531875")
                 .build())
             if (app == null) return
+            FirebaseMessaging.getInstance().subscribeToTopic("note")
             FirebaseMessaging.getInstance().subscribeToTopic("bm").addOnCompleteListener { t ->
                 ready = t.isSuccessful
                 if (!t.isSuccessful) RecordService.addLog("푸시 연결 실패 → 즐겨찾기는 30초마다 확인으로 맞춤 (${t.exception?.message})")
@@ -36,10 +37,33 @@ object Push {
 
 class PushService : FirebaseMessagingService() {
     override fun onMessageReceived(m: RemoteMessage) {
-        if (m.data["t"] == "bm" && CloudBm.on(this)) {
+        val d = m.data
+        if (d["t"] == "bm" && CloudBm.on(this)) {
             val app = applicationContext
             Thread { CloudBm.sync(app) }.start()
         }
+        // 녹화폰에서 온 알림: 원격폰만 알림창에 띄우고 업로드 기록 목록에 남김
+        if (d["t"] == "note" && d["src"] != CloudBm.deviceId(this) && !CloudBm.recordHere(this) && CloudBm.notifyOn(this)) {
+            val title = d["title"].orEmpty(); val body = d["body"].orEmpty()
+            Uploader.addNote(this, title, body)
+            showNote(title, body)
+        }
+    }
+
+    private fun showNote(title: String, body: String) {
+        val nm = getSystemService(android.app.NotificationManager::class.java)
+        val ch = "remote_note"
+        if (nm.getNotificationChannel(ch) == null)
+            nm.createNotificationChannel(android.app.NotificationChannel(ch, "녹화폰 알림", android.app.NotificationManager.IMPORTANCE_DEFAULT).apply { setShowBadge(true) })
+        val pi = android.app.PendingIntent.getActivity(this, 0,
+            android.content.Intent(this, FilesActivity::class.java).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = android.app.Notification.Builder(this, ch)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentTitle(title).setContentText(body)
+            .setStyle(android.app.Notification.BigTextStyle().bigText(body))
+            .setAutoCancel(true).setContentIntent(pi).setNumber(1).build()
+        try { nm.notify((System.currentTimeMillis() % 100000).toInt() + 1000, n) } catch (_: SecurityException) {}
     }
     override fun onNewToken(token: String) {
         FirebaseMessaging.getInstance().subscribeToTopic("bm")
