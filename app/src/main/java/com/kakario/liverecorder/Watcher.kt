@@ -84,6 +84,9 @@ object Watcher {
     }
 
     /** 번호를 모르는 스트리머: 숨은 창으로 페이지를 한 번 열어 번호 알아내기 (한 번에 하나씩) */
+    /** 녹화 칸이 번호를 모를 때: 지금 바로 알아내기 시작 */
+    fun ensureId(ctx: Context, url: String) { if (idOf(ctx, url) == null) main.post { learnLater(ctx, Bookmarks.Item(Names.streamerFromUrl(url), url)) } }
+
     private fun learnLater(ctx: Context, b: Bookmarks.Item) {
         if (learning) return
         val last = learnFailAt[key(b.url)] ?: 0

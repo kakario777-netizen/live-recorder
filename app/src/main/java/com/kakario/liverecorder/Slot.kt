@@ -222,18 +222,63 @@ class Slot(
         if (directOff) return
         directOff = true
         Lab.needKey = Lab.needKey || why.contains("열쇠")
-        log("$why → 이번엔 재생기로 받고, 그동안 배워 둠 (다음부터 직접 받기)")
+        log("$why → 우선 재생기로 받고, 알아내는 대로 직접 받기로 바꿈")
         wantOpen = true
+        if (why.contains("번호")) Thread({
+            // 번호를 알아내면 녹화를 끊지 않고 직접 받기로 갈아탐 (같은 조각은 한 번만 저장되니 겹쳐도 안전)
+            while (!stopFlag && directOff) {
+                Thread.sleep(15_000)
+                if (Watcher.idOf(ctx, pageUrl) != null && directOff && !stopFlag) {
+                    directOff = false
+                    try { feeder(switching = true) } catch (e: Exception) { log("직접 받기 오류: ${e.message}") }
+                    return@Thread
+                }
+            }
+        }, "switch-$id").start()
     }
 
-    private fun feeder() {
+    /** 영상 방식(코덱): av01 / avc1 / hvc1 */
+    private fun codecOf(b: ByteArray): String? {
+        val s = String(b, 0, minOf(b.size, 65536), Charsets.ISO_8859_1)
+        return when { s.contains("av01") -> "av01"; s.contains("avc1") || s.contains("avc3") -> "avc1"; s.contains("hvc1") || s.contains("hev1") -> "hvc1"; else -> null }
+    }
+    private fun fileCodec(p: String): String? = try {
+        java.io.File(p).inputStream().use { val b = ByteArray(65536); val n = it.read(b); if (n > 0) codecOf(b.copyOf(n)) else null }
+    } catch (e: Exception) { null }
+
+    /** 화질 후보: 원하는 코덱 먼저, 그 안에서 목표 화질 이하 중 높은 것부터 */
+    private fun rankVariants(master: String, target: Int, want: String?): List<Triple<String, String, String?>> {
+        val ls = master.lines()
+        class V(val h: Int, val label: String, val url: String, val codec: String?)
+        val vs = ArrayList<V>()
+        for (i in ls.indices) if (ls[i].startsWith("#EXT-X-STREAM-INF")) {
+            val h = Regex("""RESOLUTION=\d+x(\d+)""").find(ls[i])?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val n = Regex("""NAME="([^"]+)"""").find(ls[i])?.groupValues?.get(1) ?: "${h}p"
+            val cs = Regex("""CODECS="([^"]+)"""").find(ls[i])?.groupValues?.get(1) ?: ""
+            val c = when { cs.contains("av01") -> "av01"; cs.contains("avc") -> "avc1"; cs.contains("hvc") || cs.contains("hev") -> "hvc1"; else -> null }
+            val u = ls.getOrNull(i + 1)?.trim() ?: continue
+            if (!n.contains("blurred", true)) vs.add(V(h, "$n(${h}p${if (c != null) " $c" else ""})", u, c))
+        }
+        fun order(l: List<V>) = l.filter { it.h <= target }.sortedByDescending { it.h } + l.filter { it.h > target }.sortedBy { it.h }
+        val (a, b) = vs.partition { want == null || it.codec == want }
+        return (order(a) + order(b)).map { Triple(it.label, it.url, it.codec) }
+    }
+
+    private fun feeder(switching: Boolean = false) {
         val name = Names.streamerFromUrl(pageUrl)
         var mid = Watcher.idOf(ctx, pageUrl)
         if (mid == null) Watcher.apiHeaders?.let { hs ->
             mid = Watcher.askId("${Watcher.apiBase}/api/front/users/user-ids/" + java.net.URLEncoder.encode(name, "UTF-8"), hs)?.also { Watcher.learnId(ctx, pageUrl, it) }
         }
+        if (mid == null) {
+            // 번호 알아내기를 시키고 잠깐 기다림 (업데이트 직후엔 보통 20초 안에 다 알아냄)
+            Watcher.ensureId(ctx, pageUrl)
+            val until = System.currentTimeMillis() + 45_000
+            while (mid == null && !stopFlag && System.currentTimeMillis() < until) { Thread.sleep(2000); mid = Watcher.idOf(ctx, pageUrl) }
+        }
         val id = mid ?: run { fallbackToPlayer("스트리머 번호를 아직 몰라서"); return }
-        log("직접 받기 (재생기 없음) · 번호 $id")
+        log(if (switching) "번호를 알아냄 → 직접 받기로 갈아타는 중 · 번호 $id" else "직접 받기 (재생기 없음) · 번호 $id")
+        var switchedOff = !switching
         ChatHub.join(ctx, id, this)
         val masterUrl = "https://edge-hls.doppiocdn.org/hls/$id/master/${id}_auto.m3u8?playlistType=lowLatency"
         var plUrl: String? = null
@@ -262,12 +307,19 @@ class Slot(
                 val master = String(mr.body)
                 val pk = master.lines().filter { it.startsWith("#EXT-X-MOUFLON:PSCH:") }.map { it.substringAfterLast(':').trim() }.firstOrNull { Lab.keys.containsKey(it) }
                 if (pk == null) { fallbackToPlayer("풀이 열쇠가 바뀜"); return }
-                var picked: String? = null; var forbidden = 0
-                for ((label, u0) in Lab.rankVariantsPublic(master, targetH)) {
+                var picked: String? = null; var forbidden = 0; var pickedCodec: String? = null
+                // 이어 쓰는 파일이 있으면 같은 영상 방식(코덱)으로 받아야 파일이 안 깨짐
+                val fc = (path ?: resumePath?.takeIf { canAppend() })?.let { fileCodec(it) }
+                val m2 = if (fc == "av01" && !master.contains("av01")) (try { cdnGet("$masterUrl&preferredVideoCodec=av1") } catch (e: Exception) { null })?.takeIf { it.code in 200..299 }?.let { String(it.body) } ?: master else master
+                for ((label, u0, codec) in rankVariants(m2, targetH, fc)) {
                     val u = u0 + (if (u0.contains('?')) "&" else "?") + "psch=v2&pkey=$pk"
                     val c = try { cdnGet(u).code } catch (e: Exception) { -1 }
-                    if (c in 200..299) { picked = u; if (plUrl?.substringBefore('?') != u.substringBefore('?')) log("직접 받기 화질: $label"); break }
+                    if (c in 200..299) { picked = u; pickedCodec = codec; if (plUrl?.substringBefore('?') != u.substringBefore('?')) log("직접 받기 화질: $label"); break }
                     if (c == 403) forbidden++
+                }
+                if (switching && !switchedOff && picked != null && fc != null && pickedCodec != null && pickedCodec != fc) {
+                    log("재생기로 받던 영상 방식($fc)과 달라서 이번 방송은 재생기로 계속 (다음 방송부터 직접 받기)")
+                    directOff = true; return
                 }
                 if (picked == null && forbidden > 0) {
                     // 티켓방: 일반 화질은 막힘 → 흐린 화면 전용 목록만 따로 저장
@@ -326,6 +378,10 @@ class Slot(
                 cache[key] = body
                 trimCache()
                 q.offer(Captured(full, "seg", cdnH, pageUrl))
+                if (!switchedOff) {
+                    switchedOff = true
+                    main.postDelayed({ if (isDirect && !stopFlag) { sleepPlayer(); log("재생기 끔 → 이제 직접 받기로만 받음 (녹화는 그대로 이어짐)") } }, 8000)
+                }
             }
             Thread.sleep(1000)
         }
@@ -1050,7 +1106,7 @@ class Slot(
                     }
                     if (!chatWarned && out != null && chat?.count == 0 && now - recordStartAt > 180_000) {
                         chatWarned = true
-                        log("3분째 채팅을 못 찾았어요 (이 사이트 채팅 화면 구조가 달라서일 수 있어요)")
+                        log(if (isDirect) "3분째 채팅이 한 줄도 없어요 (조용한 방송이거나 채팅 연결 대기 중)" else "3분째 채팅을 못 찾았어요 (이 사이트 채팅 화면 구조가 달라서일 수 있어요)")
                     }
                     continue
                 }
@@ -1117,6 +1173,14 @@ class Slot(
                     val h = if (!mp4) 0 else heightCache[track]
                         ?: heightOf(track, head ?: lastInit[track]?.let { runCatching { fetch(it) }.getOrNull() })
 
+                    if (out == null && canAppend() && mp4) {
+                        val hd0 = head ?: lastInit[track]?.let { runCatching { fetch(it) }.getOrNull() }
+                        val fc = fileCodec(resumePath!!); val sc = hd0?.let { codecOf(it) }
+                        if (fc != null && sc != null && fc != sc) {
+                            log("이어 받을 영상 방식이 달라요($fc → $sc) → 예전 파일은 마무리하고 새 파일로")
+                            releaseResume("영상 방식이 다름"); appendUsed = true
+                        }
+                    }
                     if (out == null && canAppend()) {
                         // 업데이트·강제 종료 직후: 쓰던 파일에 그대로 이어서 (720 대기 없이)
                         val f = java.io.File(resumePath!!)
