@@ -165,7 +165,7 @@ class BookmarksActivity : Activity() {
                     st?.let { "● $it" },
                     Names.siteName(b.url),
                     if (cur == ALL && b.cat.isNotEmpty()) "폴더: ${b.cat}" else null,
-                    Quality.perUrl(this, b.url).takeIf { it > 0 }?.let { Quality.label(it) }
+                    Quality.perUrl(this@BookmarksActivity, b.url).takeIf { it > 0 }?.let { Quality.label(it) }
                 ).joinToString(" · ")
                 textSize = 11f
                 setTextColor(Color.parseColor(if (st == "녹화 중") "#D32F2F" else if (st != null) "#EF6C00" else "#888888"))
