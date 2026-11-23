@@ -17,6 +17,10 @@ object Remux {
     private const val JUMP_US = 3_000_000L    // 이보다 크게 건너뛰거나 뒤로 가면 '끊긴 곳'으로 봄
     private const val STEP_US = 33_000L       // 끊긴 곳을 붙일 때 띄우는 간격(1프레임 정도)
 
+    /** 마지막으로 다시 쓴 파일의 영상만의 용량·길이 (변환 화질 계산용) */
+    @Volatile var lastVideoBytes = 0L; private set
+    @Volatile var lastVideoUs = 0L; private set
+
     /** 성공하면 null, 실패하면 이유 */
     fun run(src: File, dst: File, progress: (Int) -> Unit): String? {
         val ex = MediaExtractor()
@@ -48,6 +52,8 @@ object Remux {
             var lastPct = -1
             var fixes = 0
             var dropped = 0
+            var vBytes = 0L; var vUs = 0L
+            lastVideoBytes = 0; lastVideoUs = 0
             while (true) {
                 val ti = ex.sampleTrackIndex
                 if (ti < 0) break
@@ -71,6 +77,7 @@ object Remux {
                     lastOut[ti] = maxOf(prev ?: 0L, t)
                     info.set(0, n, t, if (ex.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
                     muxer.writeSampleData(out, buf, info)
+                    if (ti !in audio) { vBytes += n; vUs = maxOf(vUs, t) }
                     readBytes += n
                     val pct = (readBytes * 100 / total).toInt().coerceAtMost(99)
                     if (pct != lastPct) { lastPct = pct; progress(pct) }
@@ -78,6 +85,7 @@ object Remux {
                 ex.advance()
             }
             muxer.stop()
+            lastVideoBytes = vBytes; lastVideoUs = vUs
             if (fixes > 0 || dropped > 0) RecordService.addLog("끊긴 곳 ${fixes}군데 시간 바로잡음, 겹친 소리 ${dropped}개 뺌: ${src.name}")
             return null
         } catch (e: Exception) {

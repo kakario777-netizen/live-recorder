@@ -517,13 +517,15 @@ class Slot(
     }
 
     private var appendUsed = false
+    /** 업데이트 뒤 티켓방(흐린 화면)이 이어지는 동안은 이어 쓰기 기한(10분)을 계속 늘려 줌 */
+    private var resumeAliveAt = 0L
 
     /** 쓰던 파일이 있고 10분 안에 마지막으로 쓴 거면 이어 쓰기 */
     private fun canAppend(): Boolean {
         if (appendUsed) return false
         val p = resumePath ?: return false
         val f = java.io.File(p)
-        return f.exists() && f.length() > 0 && System.currentTimeMillis() - f.lastModified() < 10 * 60_000L
+        return f.exists() && f.length() > 0 && System.currentTimeMillis() - maxOf(f.lastModified(), resumeAliveAt) < 10 * 60_000L
     }
 
     private fun openFile(ext: String): OutputStream {
@@ -674,6 +676,7 @@ class Slot(
                 // 티켓방 흐린 화면(이름에 blurred): 원래 파일엔 넣지 않고 '(티켓방 흐림)' 파일에 따로 저장
                 if (track.contains("blurred", true)) {
                     blurAt = now
+                    if (out == null && canAppend()) resumeAliveAt = now   // 방송은 계속 중 → 티켓방 끝나면 쓰던 파일에 이어 쓰기
                     if (pauseKind != "ticket") { pauseKind = "ticket"; log("티켓방 시작(흐린 화면) → 흐린 구간은 따로 저장") }
                     if (out != null || recordStartAt > 0) setState("일시정지")
                     try { writeBlurred(c, track) } catch (e: Exception) { log("흐린 화면 저장 실패: ${e.message}") }

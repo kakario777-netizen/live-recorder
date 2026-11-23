@@ -290,6 +290,7 @@ object Tidy {
         RecordService.addLog((if (converting) "정리 + H.265 변환 시작: " else "정리 시작: ") + job.name)
         // 1단계: 앱이 직접 다시 쓰기 — 이어 붙인 곳의 시간 값을 순서대로 바로잡음 (다시 압축 안 함)
         var srcFile: File? = dedupUsed ?: jp?.let { File(it) }
+        var videoBps = 0L
         val rem = File(workDir, "remux_" + job.name).also { it.delete() }
         if (srcFile != null) {
             remuxing = true
@@ -300,6 +301,7 @@ object Tidy {
                 dedupUsed = rem          // 변환이 실패해도 이 정리본으로 원본을 바꿔 둠
                 srcFile = rem
                 input = Uri.fromFile(rem)
+                if (Remux.lastVideoUs > 5_000_000) videoBps = Remux.lastVideoBytes * 8 * 1_000_000 / Remux.lastVideoUs
                 if (!converting) {
                     // 변환이 필요 없으면 이걸로 정리 끝
                     rem.renameTo(out)
@@ -318,7 +320,10 @@ object Tidy {
         if (converting) {
             tb.setVideoMimeType(MimeTypes.VIDEO_H265)
             val src = srcFile?.length() ?: 0L
-            val bitrate = try {
+            val bitrate = if (videoBps > 0) {
+                // 실제 영상 비트레이트의 55% (흐린 화면처럼 아주 낮으면 그만큼 낮게 → 원본보다 커지지 않게)
+                (videoBps * 55 / 100).coerceIn(30_000, 8_000_000).toInt()
+            } else try {
                 val r = android.media.MediaMetadataRetriever()
                 try {
                     r.setDataSource(ctx, input)
