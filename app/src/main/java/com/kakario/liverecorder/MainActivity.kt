@@ -204,6 +204,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         updater.onResume()
+        if (RecordService.running) RecordService.addLog("앱 화면 열림 (탭 ${tabs.size}개" + (web.url?.let { ", 지금 탭: " + Names.siteName(it) } ?: "") + ")")
     }
 
     override fun onStop() {

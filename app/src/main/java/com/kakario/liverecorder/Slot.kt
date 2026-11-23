@@ -62,6 +62,29 @@ class Slot(
         """.trimIndent()
 
         /** 웹소켓 엿듣기: 받은 글(JSON) 안에서 '닉네임 + 내용' 짝을 찾아 넘긴다 */
+        /**
+         * 숨은 재생기 보호: 같은 앱 안 브라우저 탭에서 같은 사이트를 열면, 사이트가 '다른 탭에서 재생 중'으로 보고
+         * 숨은 재생기들을 한꺼번에 멈추는 걸 막는다. (탭끼리 신호 주고받기 끊기 + 항상 '보이는 중'으로)
+         */
+        val KEEP_JS = """
+            (function(){ if (window.__lrKeepStart) return; window.__lrKeepStart = 1;
+              try { Object.defineProperty(document, 'hidden', { get: function(){ return false; } }); } catch(e){}
+              try { Object.defineProperty(document, 'visibilityState', { get: function(){ return 'visible'; } }); } catch(e){}
+              try { document.hasFocus = function(){ return true; }; } catch(e){}
+              var stop = function(e){ e.stopImmediatePropagation(); };
+              ['visibilitychange','webkitvisibilitychange','pagehide','blur','freeze'].forEach(function(n){
+                document.addEventListener(n, stop, true); window.addEventListener(n, stop, true); });
+              window.addEventListener('storage', stop, true);
+              try {
+                var Dummy = function(){ this.onmessage = null; this.onmessageerror = null; };
+                Dummy.prototype.postMessage = function(){}; Dummy.prototype.close = function(){};
+                Dummy.prototype.addEventListener = function(){}; Dummy.prototype.removeEventListener = function(){};
+                Dummy.prototype.dispatchEvent = function(){ return true; };
+                window.BroadcastChannel = Dummy;
+              } catch(e){}
+            })();
+        """.trimIndent()
+
         val WS_JS = """
             (function(){ if (window.__lrWS) return; window.__lrWS = 1;
               var NW = window.WebSocket; if (!NW) return;
@@ -257,6 +280,7 @@ class Slot(
         w.addJavascriptInterface(ChatBridge(), "LRChat")
         // 채팅 연결(웹소켓)을 페이지가 만들기 전에 엿듣는 코드를 심어 둔다 — 화면에 채팅이 안 보여도 받음
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            try { androidx.webkit.WebViewCompat.addDocumentStartJavaScript(w, KEEP_JS, setOf("*")) } catch (_: Exception) {}
             try { androidx.webkit.WebViewCompat.addDocumentStartJavaScript(w, WS_JS, setOf("*")) } catch (_: Exception) {}
         }
         web = w
