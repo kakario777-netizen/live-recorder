@@ -88,7 +88,45 @@ object Watcher {
         val last = learnFailAt[key(b.url)] ?: 0
         if (System.currentTimeMillis() - last < 30 * 60_000L) { status[key(b.url)] = "번호 확인 실패 · 30분 뒤 다시"; return }
         learning = true
+        val hs = apiHeaders
+        if (hs != null) {
+            Thread {
+                val n = Names.streamerFromUrl(b.url)
+                val id = askId("$apiBase/api/front/users/user-ids/" + java.net.URLEncoder.encode(n, "UTF-8"), hs)
+                if (id != null) { learnId(ctx, b.url, id); learning = false; batchLearn(ctx) }
+                else { apiHeaders = null; main.post { learnNow(ctx, b) } }
+            }.start()
+            return
+        }
         main.post { learnNow(ctx, b) }
+    }
+
+    @Volatile private var apiHeaders: Map<String, String>? = null
+    @Volatile private var apiBase = "https://ko.stripchat.com"
+
+    /** 이름→번호 주소에 직접 물어보기. 응답에서 번호를 꺼냄 */
+    private fun askId(url: String, hs: Map<String, String>): String? = try {
+        val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = 8000; conn.readTimeout = 8000
+        hs.forEach { (k, v) -> if (!k.equals("Accept-Encoding", true)) conn.setRequestProperty(k, v) }
+        val code = conn.responseCode
+        val body = (if (code < 400) conn.inputStream else conn.errorStream)?.use { String(it.readBytes()) } ?: ""
+        Lab.add("스트리머 번호 알아내기", "직접 물음 ${url.substringAfterLast('/')} → $code " + body.take(300))
+        if (code in 200..299) Regex(""":\s*"?(\d{4,})"?""").find(body)?.groupValues?.get(1) else null
+    } catch (e: Exception) { null }
+
+    /** 아직 번호 모르는 자동 녹화 스트리머를 한꺼번에 (페이지 없이, 같은 머리글로) */
+    private fun batchLearn(ctx: Context) {
+        val hs = apiHeaders ?: return
+        var ok = 0; var fail = 0
+        for (b in watched(ctx)) {
+            if (!b.url.contains("stripchat") || idOf(ctx, b.url) != null) continue
+            val n = Names.streamerFromUrl(b.url).ifEmpty { continue }
+            val id = askId("$apiBase/api/front/users/user-ids/" + java.net.URLEncoder.encode(n, "UTF-8"), hs)
+            if (id != null) { learnId(ctx, b.url, id); ok++ } else { fail++; if (fail >= 3 && ok == 0) break }
+            Thread.sleep(200)
+        }
+        if (ok + fail > 0) RecordService.addLog("스트리머 번호 한꺼번에 찾기: ${ok}명 성공" + (if (fail > 0) ", ${fail}명 실패(페이지로 다시)" else ""))
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -110,7 +148,18 @@ object Watcher {
         CookieManager.getInstance().setAcceptThirdPartyCookies(w, true)
         w.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, req: WebResourceRequest): WebResourceResponse? {
-                Regex("""/hls/(\d+)/master/""").find(req.url.toString())?.let { finish(it.groupValues[1], "방송 목록 주소") }
+                val u = req.url.toString()
+                Regex("""/hls/(\d+)/master/""").find(u)?.let { finish(it.groupValues[1], "방송 목록 주소") }
+                // 페이지가 '이름 → 번호'를 묻는 순간: 같은 머리글로 앱이 직접 물어서 바로 끝냄 + 다른 사람 것도 한꺼번에
+                if (u.contains("/api/front/users/user-ids/") && req.method.equals("GET", true)) {
+                    val hs = HashMap(req.requestHeaders ?: emptyMap())
+                    CookieManager.getInstance().getCookie(u)?.let { hs["Cookie"] = it }
+                    apiHeaders = hs; apiBase = u.substringBefore("/api/front/")
+                    val id = askId(u, hs)
+                    Lab.add("스트리머 번호 알아내기", "이름→번호 주소 머리글: " + hs.keys.joinToString(","))
+                    if (id != null) finish(id, "이름→번호 주소")
+                    Thread { batchLearn(ctx) }.start()
+                }
                 return null
             }
             override fun onPageFinished(view: WebView, url: String) {
@@ -130,10 +179,10 @@ object Watcher {
                             finish(best, "페이지 정보")
                         } catch (e: Exception) { finish(null, "페이지 정보 없음") }
                     }
-                }, 6000)
+                }, 3000)
             }
         }
-        main.postDelayed({ finish(null, "40초 안에 못 찾음") }, 40_000)
+        main.postDelayed({ finish(null, "25초 안에 못 찾음") }, 25_000)
         w.loadUrl(b.url)
     }
 }
