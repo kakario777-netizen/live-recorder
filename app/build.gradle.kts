@@ -24,10 +24,11 @@ android {
     signingConfigs {
         // 고정 디버그 키 — 빌드마다 서명이 바뀌어 재설치가 필요해지는 문제 방지
         getByName("debug") {
-            storeFile = file("debug.keystore")
-            storePassword = "android"
+            // 서명 키는 GitHub Secrets에서 빌드 때만 꺼내 씀 (저장소에는 두지 않음)
+            storeFile = file(System.getenv("SIGNING_KEYSTORE_PATH") ?: "debug.keystore")
+            storePassword = (System.getenv("SIGNING_PASSWORD")?.takeIf { it.isNotEmpty() } ?: "android")
             keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            keyPassword = (System.getenv("SIGNING_PASSWORD")?.takeIf { it.isNotEmpty() } ?: "android")
         }
     }
 

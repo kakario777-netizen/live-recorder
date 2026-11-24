@@ -28,7 +28,18 @@ jobs:
           gradle-version: 8.11.1
 
 
+      - name: Signing key from Secrets
+        env:
+          KS: ${{ secrets.SIGNING_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS" ]; then
+            echo "$KS" | base64 -d > "$RUNNER_TEMP/sign.keystore"
+            echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/sign.keystore" >> "$GITHUB_ENV"
+          fi
+
       - name: Build debug APK
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
         run: |
           set -o pipefail
           gradle assembleDebug --no-daemon 2>&1 | tee build.log
