@@ -58,6 +58,7 @@ object Watcher {
             if (list.isEmpty()) { status.clear(); Thread.sleep(15_000); continue }
             val t0 = System.currentTimeMillis()
             val recording = RecordService.list().map { key(it.pageUrl) }.toSet()
+            CloudBm.renewClaims(ctx, recording)
             for (b in list) {
                 if (RecordService.instance == null) return
                 val k = key(b.url)
@@ -69,6 +70,7 @@ object Watcher {
                 val code = try { Net.get(u, null, h["User-Agent"]!!, timeoutMs = 10000, maxBytes = 64 * 1024).code } catch (e: Exception) { -1 }
                 when (code) {
                     in 200..299 -> {
+                        if (!CloudBm.claim(ctx, k, RecordService.list().size)) { status[k] = "방송 중 · 다른 녹화폰이 받는 중"; continue }
                         status[k] = "방송 중 → 녹화 시작"
                         RecordService.addLog("자동 녹화: ${b.name} 방송 켜짐 → 녹화 시작")
                         RecordService.addWatch(ctx, b.url, b.name)

@@ -76,8 +76,30 @@ object CloudBm {
     // ---------- 녹화폰 확정 (한 대만) ----------
     fun recId(ctx: Context) = prefs(ctx).getString("recId", "") ?: ""
     fun recName(ctx: Context) = prefs(ctx).getString("recName", "") ?: ""
-    fun confirmed(ctx: Context) = recId(ctx).isNotEmpty() && recId(ctx) == deviceId(ctx)
-    fun lockedByOther(ctx: Context) = recId(ctx).isNotEmpty() && recId(ctx) != deviceId(ctx)
+    /** 이 폰이 녹화폰으로 확정됨 (여러 대 가능) */
+    fun confirmed(ctx: Context) = prefs(ctx).getInt("myNo", 0) > 0
+    fun myNo(ctx: Context) = prefs(ctx).getInt("myNo", 0)
+    fun recCount(ctx: Context) = prefs(ctx).getInt("recCount", 0)
+    /** 녹화폰 여러 대가 가능해져서 다른 폰 때문에 막히는 일은 없음 */
+    fun lockedByOther(ctx: Context) = false
+    /** 대표 녹화폰(1번): 뷰어 현황·녹화 요청·휴지통 명령을 받는 폰 */
+    fun primary(ctx: Context) = recordHere(ctx) && (recId(ctx).isEmpty() || recId(ctx) == deviceId(ctx))
+
+    // ---------- 녹화 나누기: 방송이 켜지면 녹화폰끼리 먼저 잡은 폰이 받음 ----------
+    /** 이 방송을 내가 받아도 되나? (녹화폰이 한 대면 항상 OK, 서버에 못 닿으면 일단 받음) */
+    fun claim(ctx: Context, key: String, active: Int): Boolean {
+        if (recCount(ctx) <= 1) return true
+        try { Thread.sleep(active * 3000L) } catch (_: Exception) {}   // 많이 받는 폰은 늦게 → 한가한 폰이 먼저
+        return try {
+            val r = post(url(ctx) + "?op=claim&s=" + java.net.URLEncoder.encode(key, "UTF-8") + "&n=$active&" + auth(ctx), "")
+            if (r.has("ok")) r.optBoolean("ok") else true
+        } catch (_: Exception) { true }
+    }
+    /** 받는 중인 방송은 계속 내 것이라고 알림 (3분 넘게 소식 없으면 다른 폰이 이어받음) */
+    fun renewClaims(ctx: Context, keys: Collection<String>) {
+        if (recCount(ctx) <= 1 || keys.isEmpty()) return
+        try { post(url(ctx) + "?op=renew&" + auth(ctx), keys.joinToString("\n")) } catch (_: Exception) {}
+    }
     /** 확정 켜기/끄기 부탁 → 다음 맞추기 때 저장소에 반영 (다른 폰이 이미 확정이면 실패) */
     fun setConfirm(ctx: Context, on: Boolean) { prefs(ctx).edit().putInt("wantRec", if (on) 1 else 0).putBoolean("dirty", true).apply() }
 
@@ -287,26 +309,27 @@ object CloudBm {
             val remoteB = remote?.optJSONArray("b")?.let { runCatching { Bookmarks.fromJson(it) }.getOrNull() } ?: emptyList()
             val remoteC = remote?.optJSONArray("c")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
 
-            // 녹화폰 확정: 저장소에 한 대만. 다른 폰이 확정이면 이 폰은 녹화폰이 될 수 없음
-            val rr = remote?.optJSONObject("rec"); val rid = rr?.optString("id").orEmpty(); val rname = rr?.optString("name").orEmpty()
+            // 녹화폰 확정: 여러 대 가능 (1·2·3번). recs = [{id,name,no}], rec = 1번(대표 · 뷰어 현황용)
             val me = deviceId(ctx)
-            var recIdNow = rid; var recNameNow = rname
+            val recsIn = remote?.optJSONArray("recs")?.let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+                ?: remote?.optJSONObject("rec")?.takeIf { it.optString("id").isNotEmpty() }?.let { listOf(JSONObject().put("id", it.optString("id")).put("name", it.optString("name")).put("no", 1)) }
+                ?: emptyList()
+            val recs = recsIn.toMutableList()
             when (p.getInt("wantRec", -1)) {
-                1 -> if (rid.isEmpty() || rid == me) { recIdNow = me; recNameNow = android.os.Build.MODEL }
-                     else lastResult = "다른 폰($rname)이 이미 녹화폰으로 확정돼 있어요"
-                0 -> if (rid == me) { recIdNow = ""; recNameNow = "" }
+                1 -> if (recs.none { it.optString("id") == me }) {
+                    val used = recs.map { it.optInt("no") }.toSet()
+                    recs.add(JSONObject().put("id", me).put("name", android.os.Build.MODEL).put("no", (1..99).first { it !in used }))
+                }
+                0 -> recs.removeAll { it.optString("id") == me }
             }
-            val recChanged = recIdNow != rid
-            p.edit().putString("recId", recIdNow).putString("recName", recNameNow).putInt("wantRec", -1).apply()
-            if (recIdNow.isNotEmpty() && recIdNow != me && recordHere(ctx)) {
-                // 다른 폰이 녹화폰으로 확정됨 → 이 폰은 뷰어로
-                p.edit().putBoolean("recordHere", false).putBoolean("viewer", true).putLong("ver", 0).apply()
-                RecordService.addLog("다른 폰($recNameNow)이 녹화폰으로 확정돼서 이 폰은 뷰어로 바뀌었어요")
-                return@synchronized "다른 폰이 녹화폰 → 이 폰은 뷰어"
-            }
+            recs.sortBy { it.optInt("no") }
+            val recChanged = recs.map { it.toString() } != recsIn.sortedBy { it.optInt("no") }.map { it.toString() }
+            val recIdNow = recs.firstOrNull()?.optString("id").orEmpty(); val recNameNow = recs.firstOrNull()?.optString("name").orEmpty()
+            val myNo = recs.firstOrNull { it.optString("id") == me }?.optInt("no") ?: 0
+            p.edit().putString("recId", recIdNow).putString("recName", recNameNow).putInt("myNo", myNo).putInt("recCount", recs.size).putInt("wantRec", -1).apply()
             if (recChanged && (download || remote == null)) {
                 // 다운로드 모드는 원래 안 올리지만 확정 정보는 올려야 함
-                remote?.put("rec", JSONObject().put("id", recIdNow).put("name", recNameNow))
+                remote?.put("rec", JSONObject().put("id", recIdNow).put("name", recNameNow))?.put("recs", JSONArray(recs))
                 post("$base?op=save&" + auth(ctx), (remote ?: JSONObject()).toString())
             }
 
@@ -349,7 +372,7 @@ object CloudBm {
             }
             val sOut = JSONObject().put("chatKoreanOnly", ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean(chatKey(ctx), true))
             val out = JSONObject().put("b", Bookmarks.toJson(merged)).put("c", JSONArray(cats))
-                .put("rec", JSONObject().put("id", recIdNow).put("name", recNameNow))
+                .put("rec", JSONObject().put("id", recIdNow).put("name", recNameNow)).put("recs", JSONArray(recs))
                 .put("s", sOut).put("st", maxOf(p.getLong(stKey(ctx), 0), rst)).toString()
             var newVer = remoteVer
             if (dirty || remote == null || out != remote.toString()) {

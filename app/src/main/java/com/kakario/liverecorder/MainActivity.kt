@@ -1181,9 +1181,8 @@ class MainActivity : Activity() {
 
         section("이 폰 역할")
         val recSw = toggle("녹화폰으로 확정", when {
-            other -> "'${CloudBm.recName(ctx)}'가 녹화폰으로 확정돼 있어요. 바꾸려면 그 폰에서 확정을 꺼 주세요."
-            mine -> "이 폰이 녹화폰이에요. 끄면 다른 폰을 녹화폰으로 정할 수 있어요."
-            else -> "한 대만 녹화폰이 돼요. 켜면 나머지 폰은 모두 원격폰(뷰어)이 돼요."
+            mine -> "이 폰은 ${CloudBm.myNo(ctx)}번 녹화폰이에요 (녹화폰 ${CloudBm.recCount(ctx)}대). 방송 대기는 모두 같이 하고, 녹화는 폰끼리 자동으로 나눠요."
+            else -> "여러 대를 녹화폰으로 확정할 수 있어요 (1·2·3번…). 방송 대기는 모두 같이, 녹화는 자동으로 나눠 받아요."
         }, mine || (CloudBm.recordHere(ctx) && !other), enabled = !other)
         line()
         val vwSw = toggle("원격폰 뷰어 모드", "켜면 녹화폰 화면을 그대로 보고, 여기서 하는 건 녹화폰에 적용돼요. 끄면 다운로드 모드(이 폰 화면, 이 폰에서 직접 녹화 · 생방 대기는 없음).",

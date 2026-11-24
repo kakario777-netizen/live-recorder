@@ -54,14 +54,14 @@ class PushService : FirebaseMessagingService() {
         }
         if (d["t"] == "note" && d["title"] == "기기 승인 요청") return
         // 원격폰이 현황을 물어봄 → 녹화폰이 짧게 답함
-        if (d["t"] == "req" && CloudBm.recordHere(this)) {
+        if (d["t"] == "req" && CloudBm.primary(this)) {   // 녹화폰이 여러 대면 1번만 답함 (뷰어 탭은 나중에)
             val st = CloudBm.statusJson()
             val same = st == lastSent && System.currentTimeMillis() - lastSentAt < 10 * 60_000L
             if (!same) { lastSent = st; lastSentAt = System.currentTimeMillis() }
             CloudBm.notifyRemote(this, "녹화폰 현황", if (same) "=" else st, force = true)   // 바뀐 게 없으면 '=' 한 글자만
         }
         // 원격폰(뷰어)이 녹화를 부탁함 → 녹화폰이 받아서 녹화
-        if (d["t"] == "note" && d["src"] != CloudBm.deviceId(this) && CloudBm.recordHere(this) && d["title"] == "녹화 요청") {
+        if (d["t"] == "note" && d["src"] != CloudBm.deviceId(this) && CloudBm.primary(this) && d["title"] == "녹화 요청") {
             val parts = d["body"].orEmpty().split('\n')
             val url = parts.getOrNull(0).orEmpty(); val name = parts.getOrNull(1).orEmpty()
             if (url.startsWith("http")) {
@@ -75,7 +75,7 @@ class PushService : FirebaseMessagingService() {
         if (d["t"] == "note" && d["src"] != CloudBm.deviceId(this) && CloudBm.recordHere(this) && d["title"] == "명령") {
             val (cmd, name) = d["body"].orEmpty().split('|', limit = 2).let { (it.getOrNull(0) ?: "") to (it.getOrNull(1) ?: "") }
             if (cmd == "trashh") name.toIntOrNull()?.let { Uploader.setTrashHours(this, it) }
-            if (cmd == "trash") { val (n, mb) = Uploader.emptyTrash(); CloudBm.notifyRemote(this, "휴지통 비움", "${n}개 · ${mb}MB", force = true) }
+            if (cmd == "trash" && CloudBm.primary(this)) { val (n, mb) = Uploader.emptyTrash(); CloudBm.notifyRemote(this, "휴지통 비움", "${n}개 · ${mb}MB", force = true) }
             val sl = RecordService.list().firstOrNull { it.streamer.equals(name, true) || it.host == name }
             if (sl != null) {
                 when (cmd) {
@@ -83,7 +83,7 @@ class PushService : FirebaseMessagingService() {
                     "retry" -> { sl.retryNow(); RecordService.addLog("원격폰 요청으로 다시 시도: $name") }
                 }
             }
-            Thread { Thread.sleep(1500); val st = CloudBm.statusJson(); lastSent = st; lastSentAt = System.currentTimeMillis(); CloudBm.notifyRemote(this, "녹화폰 현황", st, force = true) }.start()
+            if (CloudBm.primary(this)) Thread { Thread.sleep(1500); val st = CloudBm.statusJson(); lastSent = st; lastSentAt = System.currentTimeMillis(); CloudBm.notifyRemote(this, "녹화폰 현황", st, force = true) }.start()
         }
         // 녹화폰에서 온 알림: 원격폰만 처리
         if (d["t"] == "note" && d["src"] != CloudBm.deviceId(this) && !CloudBm.recordHere(this)) {
