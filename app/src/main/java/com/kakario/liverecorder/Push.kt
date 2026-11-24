@@ -46,6 +46,13 @@ class PushService : FirebaseMessagingService() {
             val app = applicationContext
             Thread { CloudBm.sync(app) }.start()
         }
+        // 새 폰이 등록 승인을 기다림 → 이미 등록된 폰에 '승인' 버튼 알림
+        if (d["t"] == "note" && d["title"] == "기기 승인 요청" && CloudBm.approved(this)) {
+            val (name, id) = d["body"].orEmpty().split('|', limit = 2).let { (it.getOrNull(0) ?: "") to (it.getOrNull(1) ?: "") }
+            if (id.isNotEmpty() && id != CloudBm.deviceId(this)) showApprove(name, id)
+            return
+        }
+        if (d["t"] == "note" && d["title"] == "기기 승인 요청") return
         // 원격폰이 현황을 물어봄 → 녹화폰이 짧게 답함
         if (d["t"] == "req" && CloudBm.recordHere(this)) {
             val st = CloudBm.statusJson()
@@ -109,7 +116,45 @@ class PushService : FirebaseMessagingService() {
             .setAutoCancel(true).setContentIntent(pi).setNumber(1).build()
         try { nm.notify((System.currentTimeMillis() % 100000).toInt() + 1000, n) } catch (_: SecurityException) {}
     }
+    private fun showApprove(name: String, id: String) {
+        val nm = getSystemService(android.app.NotificationManager::class.java)
+        val ch = "remote_note"
+        if (nm.getNotificationChannel(ch) == null)
+            nm.createNotificationChannel(android.app.NotificationChannel(ch, "녹화폰 알림", android.app.NotificationManager.IMPORTANCE_DEFAULT).apply { setShowBadge(true) })
+        val nid = 9000 + (id.hashCode() and 0xfff)
+        val ok = android.app.PendingIntent.getBroadcast(this, nid,
+            android.content.Intent(this, ApproveReceiver::class.java).putExtra("id", id).putExtra("name", name).putExtra("nid", nid),
+            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = android.app.Notification.Builder(this, ch)
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setContentTitle("새 기기 승인 요청: $name")
+            .setContentText("내 폰이 맞으면 승인을 눌러 주세요. 모르는 기기면 무시하세요.")
+            .addAction(android.app.Notification.Action.Builder(null, "승인", ok).build())
+            .setAutoCancel(true).build()
+        try { nm.notify(nid, n) } catch (_: SecurityException) {}
+    }
     override fun onNewToken(token: String) {
         FirebaseMessaging.getInstance().subscribeToTopic("bm")
+    }
+}
+
+
+/** 알림의 '승인' 버튼 */
+class ApproveReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(c: Context, i: android.content.Intent) {
+        val id = i.getStringExtra("id") ?: return
+        val name = i.getStringExtra("name").orEmpty()
+        val nid = i.getIntExtra("nid", 0)
+        val app = c.applicationContext
+        val pr = goAsync()
+        Thread {
+            val ok = CloudBm.approve(app, id)
+            RecordService.addLog(if (ok) "기기 승인: $name" else "기기 승인 실패: $name")
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(app, if (ok) "$name 승인했어요" else "승인 실패 (인터넷 확인 후 다시)", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            if (ok) app.getSystemService(android.app.NotificationManager::class.java).cancel(nid)
+            pr.finish()
+        }.start()
     }
 }

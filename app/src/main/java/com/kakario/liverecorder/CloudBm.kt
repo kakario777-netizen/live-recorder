@@ -26,8 +26,7 @@ object CloudBm {
     /** 즐겨찾기 저장소: 메인 계정(777) 드라이브의 스크립트 */
     private val DEFAULT_URL: String by lazy { dec("RkgTX9RRfkSFe93YCgGOSoxW7ZVC79zUwwVBxNXWOUFEa1XUqVFJtIUWDM2WERSPe4TcaxVdawiSUw1XjRHBQgTJZd1QF0BEF4QVLZVes0UADVUXCFFDP0VAZFlHXFQBdMQUcQkQEAREfkRHKEUHWYAB") }
     /** 푸시 보내기 전용: 서버 계정(1004)의 스크립트 */
-    val RELAY_URL: String by lazy { dec("==QVXh0VCJDFBEGY1hmXk8FNOpWZnxRJEpxDZp3ADIhF541CbNmLPhAP+dURThBOl0DVxNXX+ACGvM0AzdHLWdBWOAnAFYQIL4QVLZVes0UADVUXCFFDP0VAZFlHXFQBdMQUcQkQEAREfkRHKEUHWYAB") }
-    fun url(ctx: Context) = prefs(ctx).getString("url", null)?.takeIf { it.isNotBlank() && it != RELAY_URL } ?: DEFAULT_URL
+    fun url(ctx: Context) = DEFAULT_URL
     fun on(ctx: Context) = url(ctx).startsWith("https://script.google.com/")
     fun setUrl(ctx: Context, u: String) = prefs(ctx).edit().putString("url", u.trim()).putLong("ver", 0).putBoolean("dirty", true).apply()
     /** 녹화폰(true): 생방 대기 녹화 + 원격폰에 알림 보냄 / 원격폰(false): 즐겨찾기만 맞추고 알림을 받음 */
@@ -41,6 +40,39 @@ object CloudBm {
         val p = prefs(ctx)
         return p.getString("dev", null) ?: java.util.UUID.randomUUID().toString().take(8).also { p.edit().putString("dev", it).apply() }
     }
+    // ---------- 기기 등록: 등록·승인된 폰만 저장소·푸시를 쓸 수 있음 ----------
+    /** 이 폰만의 비밀 열쇠 (앱 파일에는 없음, 폰 안에서 처음 한 번 만듦) */
+    private fun devKey(ctx: Context): String {
+        val p = prefs(ctx)
+        return p.getString("devKey", null) ?: run {
+            val b = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+            android.util.Base64.encodeToString(b, android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING)
+                .also { p.edit().putString("devKey", it).apply() }
+        }
+    }
+    private fun auth(ctx: Context) = "d=" + java.net.URLEncoder.encode(deviceId(ctx), "UTF-8") + "&k=" + devKey(ctx)
+    fun approved(ctx: Context) = prefs(ctx).getBoolean("devOk", false)
+    @Volatile private var regAt = 0L
+    /** 등록 (처음 폰은 바로 승인, 다음 폰부터는 등록된 폰에서 '승인'을 눌러야 함) */
+    fun register(ctx: Context) {
+        if (!on(ctx) || approved(ctx) || System.currentTimeMillis() - regAt < 60_000L) return
+        regAt = System.currentTimeMillis()
+        try {
+            val n = java.net.URLEncoder.encode(android.os.Build.MODEL, "UTF-8")
+            val r = post(url(ctx) + "?op=reg&n=$n&" + auth(ctx), "")
+            val ok = r.optBoolean("ok")
+            prefs(ctx).edit().putBoolean("devOk", ok).apply()
+            RecordService.addLog(if (ok) "이 폰 기기 등록 완료" else "기기 등록 요청 보냄 → 등록된 폰에서 '승인'을 눌러 주세요")
+        } catch (_: Exception) {}
+    }
+    /** 다른 폰 승인 (등록된 폰에서만) */
+    fun approve(ctx: Context, target: String): Boolean = try {
+        post(url(ctx) + "?op=approve&target=" + java.net.URLEncoder.encode(target, "UTF-8") + "&" + auth(ctx), "").optBoolean("ok")
+    } catch (_: Exception) { false }
+    /** 푸시 보내기는 저장소(777)를 거쳐서만 (저장소가 기기 확인 후 1004 서버에 전달) */
+    private fun relay(ctx: Context, op: String, body: String = "", extra: String = "") =
+        post(url(ctx) + "?op=$op$extra&" + auth(ctx), body)
+
     // ---------- 녹화폰 확정 (한 대만) ----------
     fun recId(ctx: Context) = prefs(ctx).getString("recId", "") ?: ""
     fun recName(ctx: Context) = prefs(ctx).getString("recName", "") ?: ""
@@ -64,7 +96,7 @@ object CloudBm {
         Thread {
             try {
                 val js = JSONObject().put("title", "녹화 요청").put("body", "$url\n$name").put("from", deviceId(app)).toString()
-                post("$RELAY_URL?notify=1", js)
+                relay(app, "notify", js)
             } catch (_: Exception) {}
         }.start()
     }
@@ -74,7 +106,8 @@ object CloudBm {
     @Volatile var statusAskedAt = 0L
     fun askStatus(ctx: Context) {
         statusAskedAt = System.currentTimeMillis()
-        Thread { try { post("$RELAY_URL?ping=req", "") } catch (_: Exception) {} }.start()
+        val app = ctx.applicationContext
+        Thread { try { relay(app, "ping", extra = "&t=req") } catch (_: Exception) {} }.start()
     }
 
     /** 녹화폰: 지금 현황을 짧게 (푸시 한 장 4KB 안에 들어가게) */
@@ -162,7 +195,7 @@ object CloudBm {
     fun sendCommand(ctx: Context, cmd: String, name: String) {
         val app = ctx.applicationContext
         Thread {
-            try { post("$RELAY_URL?notify=1", JSONObject().put("title", "명령").put("body", "$cmd|$name").put("from", deviceId(app)).toString()) } catch (_: Exception) {}
+            try { relay(app, "notify", JSONObject().put("title", "명령").put("body", "$cmd|$name").put("from", deviceId(app)).toString()) } catch (_: Exception) {}
         }.start()
     }
 
@@ -173,7 +206,7 @@ object CloudBm {
         Thread {
             try {
                 val js = JSONObject().put("title", title).put("body", body).put("from", deviceId(app)).toString()
-                post("$RELAY_URL?notify=1", js)
+                relay(app, "notify", js)
             } catch (_: Exception) {}
         }.start()
     }
@@ -243,7 +276,9 @@ object CloudBm {
         val dirty = (p.getBoolean("dirty", false) || fmtOld) && !download
         try {
             val ver = p.getLong("ver", 0)
-            val r = get("$base?v=$ver")
+            if (!approved(ctx)) register(ctx)
+            val r = get("$base?v=$ver&" + auth(ctx))
+            if (r.optString("err") == "auth") { lastResult = "이 폰은 아직 승인 전이에요 (등록된 폰에 온 알림에서 '승인'을 눌러 주세요)"; return lastResult }
             val remoteVer = r.optLong("ver", 0)
             if (r.optBoolean("same") && !dirty) { lastResult = "최신 상태"; return lastResult }
             // 즐겨찾기 저장 위치: 뷰어 모드면 '녹화폰 거울'(따로 보관), 아니면 이 폰 것
@@ -272,7 +307,7 @@ object CloudBm {
             if (recChanged && (download || remote == null)) {
                 // 다운로드 모드는 원래 안 올리지만 확정 정보는 올려야 함
                 remote?.put("rec", JSONObject().put("id", recIdNow).put("name", recNameNow))
-                post(base, (remote ?: JSONObject()).toString())
+                post("$base?op=save&" + auth(ctx), (remote ?: JSONObject()).toString())
             }
 
             if (download) {
@@ -318,7 +353,7 @@ object CloudBm {
                 .put("s", sOut).put("st", maxOf(p.getLong(stKey(ctx), 0), rst)).toString()
             var newVer = remoteVer
             if (dirty || remote == null || out != remote.toString()) {
-                newVer = post(base, out).optLong("ver", remoteVer)
+                newVer = post("$base?op=save&" + auth(ctx), out).optLong("ver", remoteVer)
             }
             p.edit().putLong("ver", newVer).putBoolean("dirty", false).putInt("fmt", 2).apply()
             lastResult = "맞춤 완료 (즐겨찾기 ${merged.count { !it.del }}개)"

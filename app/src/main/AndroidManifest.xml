@@ -73,6 +73,7 @@
             </intent-filter>
         </service>
         <receiver android:name=".InstallResultReceiver" android:exported="false" />
+        <receiver android:name=".ApproveReceiver" android:exported="false" />
         <receiver android:name=".UpdatedReceiver" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
