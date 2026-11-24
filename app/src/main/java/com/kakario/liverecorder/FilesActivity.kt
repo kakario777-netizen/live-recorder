@@ -60,7 +60,7 @@ class FilesActivity : Activity() {
         })
 
         root.addView(CheckBox(this).apply {
-            text = "H.264 녹화는 H.265로 변환 후 업로드 (충전 중에만 변환, 그전엔 대기)"
+            text = "H.264 녹화는 H.265로 변환 후 업로드 (꺼 두면 정리만 하고 바로 업로드 — 기본 꺼짐)"
             textSize = 13f
             isChecked = Tidy.autoH265(this@FilesActivity)
             setPadding(dp(4), 0, 0, 0)
@@ -81,13 +81,13 @@ class FilesActivity : Activity() {
 
         ConvertService.onChange = { runOnUiThread { render() } }
         if (intent.getBooleanExtra("openFtp", false)) root.post { ftpSettings() }
-        Tidy.onChange = { runOnUiThread { if (Tidy.current == null) reload() else render() } }
-        Uploader.onChange = { runOnUiThread { if (Uploader.current == null) reload() else render() } }
+        Tidy.onChange = { runOnUiThread { softRefresh() } }
+        Uploader.onChange = { runOnUiThread { softRefresh() } }
     }
 
     private val refresher = android.os.Handler(android.os.Looper.getMainLooper())
     private val refreshTick = object : Runnable {
-        override fun run() { val y = scroll.scrollY; render(); scroll.post { scroll.scrollTo(0, y) }; refresher.postDelayed(this, 10_000) }
+        override fun run() { val y = scroll.scrollY; render(); scroll.post { scroll.scrollTo(0, y) }; refresher.postDelayed(this, 30_000) }
     }
 
     override fun onResume() {
@@ -109,18 +109,27 @@ class FilesActivity : Activity() {
         super.onDestroy()
     }
 
+    private var lastFull = 0L
+    /** 진행률이 바뀔 때마다 목록 전체를 다시 그리면 수천 줄이라 렉 → 15초에 한 번만 */
+    private fun softRefresh() {
+        val now = System.currentTimeMillis()
+        if (now - lastFull > 15_000) { lastFull = now; val y = scroll.scrollY; reload(); scroll.post { scroll.scrollTo(0, y) } }
+    }
+
     private fun reload() {
         Thread {
             val l = try { Library.list(this) } catch (e: Exception) { emptyList() }
             runOnUiThread { items = l; render() }
             // 코덱은 뒤에서 하나씩 확인
+            var n = 0
             l.forEach { it2 ->
                 val k = it2.uri.toString()
                 if (!codecCache.containsKey(k)) {
                     codecCache[k] = Codec.probeUri(this, it2.uri) ?: "?"
-                    runOnUiThread { render() }
+                    if (++n % 25 == 0) runOnUiThread { render() }   // 하나 볼 때마다 다시 그리면 렉
                 }
             }
+            if (n > 0) runOnUiThread { render() }
         }.start()
     }
 
@@ -147,7 +156,7 @@ class FilesActivity : Activity() {
         val localNames = items.map { it.name }.toHashSet()
         val active = RecordService.fileStates()
         val entries = (items.map { Entry(it.date * 1000, it, null) } +
-            Uploader.history(this).filter { it.name !in localNames }.map { Entry(it.time, null, it) })
+            Uploader.history(this).filter { it.name !in localNames }.sortedByDescending { it.time }.take(150).map { Entry(it.time, null, it) })
             .sortedWith(compareBy<Entry>({ if (it.local?.name in active) 0 else 1 }, { -it.time }))
         if (entries.isEmpty()) {
             listBox.addView(TextView(this).apply { text = "아직 녹화한 파일이 없어요"; setPadding(dp(16), dp(24), dp(16), 0) })

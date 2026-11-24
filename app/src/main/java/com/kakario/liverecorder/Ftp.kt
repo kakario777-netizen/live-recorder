@@ -143,7 +143,7 @@ object Uploader {
     fun enqueue(ctx: Context, name: String, path: String?, streamer: String, allowH264: Boolean = false) {
         if (path == null || !FtpConfig.ready(ctx) || BuildConfig.LAB) return
         // H.264는 변환 후에만 올림 (변환 설정이 켜져 있을 때). 변환 실패 파일은 다시 넣지 않음
-        if (!allowH264 && Tidy.isFailed(name)) { RecordService.addLog("변환 실패 파일이라 업로드하지 않음 (파일 목록에서 직접 선택 가능): $name"); return }
+        if (!allowH264 && Tidy.autoH265(ctx) && Tidy.isFailed(name)) { RecordService.addLog("변환 실패 파일이라 업로드하지 않음 (파일 목록에서 직접 선택 가능): $name"); return }
         if (!allowH264 && Tidy.autoH265(ctx) && Codec.phoneHasHevcEncoder() && name.lowercase().endsWith(".mp4") &&
             Codec.probeUri(ctx, android.net.Uri.fromFile(File(path))) == android.media.MediaFormat.MIMETYPE_VIDEO_AVC) {
             RecordService.addLog("H.264라 업로드하지 않음 (H.265 변환 후 올림): $name")

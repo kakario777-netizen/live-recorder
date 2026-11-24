@@ -101,9 +101,13 @@ object Tidy {
     }
 
     private fun onPowerConnected(ctx: Context) {
+        if (!autoH265(ctx)) {
+            val fl = synchronized(queue) { val l = failed.toList(); failed.clear(); l }
+            fl.forEach { Uploader.enqueue(ctx, it.name, it.path ?: pathFor(it.name), it.streamer, allowH264 = true) }
+        }
         val moved = synchronized(queue) { val l = waitCharge.toList(); waitCharge.clear(); queue.addAll(l); sortQueue(); l.size }
         if (moved > 0) {
-            RecordService.addLog("충전기 연결됨 → H.265 변환 시작 (${moved}개)")
+            RecordService.addLog(if (autoH265(ctx)) "충전기 연결됨 → H.265 변환 시작 (${moved}개)" else "충전 대기 ${moved}개 → 변환 없이 업로드로")
             onChange?.invoke()
             ensureThread()
             handler?.post { if (current == null) next(ctx) }
@@ -142,7 +146,12 @@ object Tidy {
     @Volatile private var remuxing = false
 
     /** H.264로 녹화된 파일은 정리하면서 H.265로 변환 (기본 켜짐, 충전 중일 때만) */
-    fun autoH265(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("autoH265", true)
+    /** H.265 변환 후 업로드 (기본 꺼짐: 업로드가 먼저 — 쌓인 파일을 줄이는 게 우선) */
+    fun autoH265(ctx: Context): Boolean {
+        val p = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
+        if (!p.getBoolean("uploadFirstV1", false)) p.edit().putBoolean("uploadFirstV1", true).putBoolean("autoH265", false).apply()
+        return p.getBoolean("autoH265", false)
+    }
 
     /**
      * 변환해도 되는지: 배터리 80% 이상이거나 충전기가 꽂혀 있으면 OK.
@@ -215,7 +224,7 @@ object Tidy {
             val ctx = appCtx ?: return
             try { Uploader.cleanTrash(ctx) } catch (_: Exception) {}
             val ok = charging(ctx)
-            if (synchronized(queue) { waitCharge.isNotEmpty() } && ok) onPowerConnected(ctx)
+            if (synchronized(queue) { waitCharge.isNotEmpty() } && (ok || !autoH265(ctx))) onPowerConnected(ctx)
             // 변환 중인데 80% 아래로 떨어졌고 충전기도 없으면 멈춤
             if (!ok && converting && current?.force != true) onPowerDisconnected(ctx)
             handler?.postDelayed(this, 60_000)
@@ -283,7 +292,7 @@ object Tidy {
         var waitUpload = false
         val job = synchronized(queue) {
             val j = queue.firstOrNull { !isTidied(ctx, it.name) }
-                ?: queue.firstOrNull()?.let { if (Uploader.busyNow()) { waitUpload = true; null } else it }
+                ?: queue.firstOrNull()?.let { if (autoH265(ctx) && Uploader.busyNow()) { waitUpload = true; null } else it }
             j?.also { queue.remove(it) }
         }
         if (job == null) {
@@ -293,6 +302,13 @@ object Tidy {
             return
         }
         val tidied = isTidied(ctx, job.name)
+        if (tidied && !job.force && !autoH265(ctx)) {
+            // 이미 정리된 파일인데 변환은 꺼짐 → 바로 업로드로
+            Uploader.enqueue(ctx, job.name, job.path ?: pathFor(job.name), job.streamer, allowH264 = true)
+            persist(); onChange?.invoke()
+            handler?.post { next(ctx) }
+            return
+        }
         // 아직 방송 칸이 쓰고 있는(또는 이어 쓸) 파일이면 건드리지 않고 나중으로
         if (RecordService.isActiveFile(job.name)) {
             // 빼 두기만 함: 녹화가 끝나면 방송 칸이 다시 넣고, 아니면 자동 정리(5분마다)가 찾아서 넣음
