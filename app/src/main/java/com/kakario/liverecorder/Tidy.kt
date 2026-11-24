@@ -47,6 +47,12 @@ object Tidy {
 
     fun busy(): Boolean = current != null || synchronized(queue) { queue.isNotEmpty() || waitCharge.isNotEmpty() }
 
+    /** 파일 이름의 녹화 시각(yyyyMMdd HHmmss)으로 오래된 것부터 */
+    fun timeKey(name: String): String = Regex("""(\d{8}) (\d{6})""").find(name)?.let { it.groupValues[1] + it.groupValues[2] } ?: "99999999999999"
+    private fun sortQueue() { val l = queue.sortedBy { timeKey(it.name) }; queue.clear(); queue.addAll(l) }
+    /** 현황용: 대기 중인 이름들(오래된 순), 충전 대기 수 */
+    fun queuedNames(): List<String> = synchronized(queue) { queue.map { it.name } }
+
     fun waitingCount(): Int = synchronized(queue) { waitCharge.size }
 
     private fun persist() {
@@ -95,7 +101,7 @@ object Tidy {
     }
 
     private fun onPowerConnected(ctx: Context) {
-        val moved = synchronized(queue) { val l = waitCharge.toList(); waitCharge.clear(); queue.addAll(l); l.size }
+        val moved = synchronized(queue) { val l = waitCharge.toList(); waitCharge.clear(); queue.addAll(l); sortQueue(); l.size }
         if (moved > 0) {
             RecordService.addLog("충전기 연결됨 → H.265 변환 시작 (${moved}개)")
             onChange?.invoke()
@@ -253,6 +259,7 @@ object Tidy {
             if (current?.name == job.name || queue.any { it.name == job.name } || waitCharge.any { it.name == job.name }) return
             if (failed.any { it.name == job.name } && !job.force) return   // 변환 실패 파일은 자동으로 다시 넣지 않음
             queue.add(job)
+            sortQueue()
         }
         persist()
         ensureThread()

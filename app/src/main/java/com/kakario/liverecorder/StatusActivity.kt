@@ -28,6 +28,8 @@ class StatusActivity : Activity() {
 
     private lateinit var sumBox: LinearLayout
     private lateinit var listBox: LinearLayout
+    private lateinit var workBox: LinearLayout
+    private var lastWork = ""
     private val h = Handler(Looper.getMainLooper())
     private var lastIds = ""
     private val lines = HashMap<Int, Pair<TextView, TextView>>()
@@ -63,7 +65,8 @@ class StatusActivity : Activity() {
         root.addView(sumBox)
 
         listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), dp(12)) }
-        root.addView(ScrollView(this).apply { addView(listBox) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        workBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), 0) }
+        root.addView(ScrollView(this).apply { addView(LinearLayout(this@StatusActivity).apply { orientation = LinearLayout.VERTICAL; addView(workBox); addView(listBox) }) }, LinearLayout.LayoutParams(-1, 0, 1f))
 
         val bottom = LinearLayout(this).apply { setPadding(dp(8), dp(4), dp(8), dp(4)); setBackgroundColor(Color.WHITE) }
         bottom.addView(Button(this).apply {
@@ -103,6 +106,8 @@ class StatusActivity : Activity() {
         sums[4].text = "${l.sumOf { it.bytes } / 1024 / 1024}MB"; sums[5].text = "합계 · 등록 ${l.size}개"
         val ids = l.sortedWith(compareBy({ it.group() }, { it.id })).joinToString(",") { "${it.id}:${it.group()}" }
         if (ids != lastIds) { lastIds = ids; build(l) }
+        val w = CloudBm.workJson(this); val ws = w.toString()
+        if (ws != lastWork) { lastWork = ws; CloudBm.fillWork(workBox, w) }
         l.forEach { sl ->
             lines[sl.id]?.let { (name, info) ->
                 name.text = sl.streamer.ifEmpty { sl.host }

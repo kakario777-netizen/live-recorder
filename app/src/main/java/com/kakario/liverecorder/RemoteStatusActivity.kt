@@ -131,6 +131,8 @@ class RemoteStatusActivity : Activity() {
             listBox.addView(TextView(this).apply { text = raw; textSize = 13f; setTextColor(Color.parseColor("#333333")) })
             return
         }
+        o.optJSONObject("w")?.let { w -> listBox.addView(LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; CloudBm.fillWork(this, w) }) }
+            ?: listBox.addView(TextView(this).apply { text = "정리·업로드 현황은 녹화폰을 이번 업데이트로 올리면 보여요"; textSize = 12f; setTextColor(Color.parseColor("#888888")); setPadding(dp(4), dp(8), 0, 0) })
         sums[0].text = "${o.optInt("n")}개"; sums[1].text = "받는 중"
         sums[2].text = o.optString("r").substringBefore('/') + "MB/s"; sums[3].text = "속도"
         sums[4].text = "${o.optLong("tot")}MB"; sums[5].text = "합계 · 등록 ${o.optInt("all")}개"

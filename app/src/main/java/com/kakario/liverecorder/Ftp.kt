@@ -100,6 +100,7 @@ object Uploader {
     }
 
     fun busy(): Boolean = current != null || synchronized(queue) { queue.isNotEmpty() }
+    fun queuedNames(): List<String> = synchronized(queue) { queue.sortedBy { Tidy.timeKey(it.name) }.map { it.name + if (it.tries > 0) " (실패 ${it.tries}번, 다시 대기)" else "" } }
 
     fun statusOf(name: String): String? {
         if (current?.name == name) return "업로드 중… $percent%"
@@ -220,7 +221,8 @@ object Uploader {
         while (true) {
             val now = System.currentTimeMillis()
             val job = synchronized(queue) {
-                queue.filter { it.nextAt <= now }.minByOrNull { it.nextAt }?.also { queue.remove(it) }
+                // 오래된 녹화부터 차례대로 (실패해서 기다리는 건 시간이 되면)
+                queue.filter { it.nextAt <= now }.minByOrNull { Tidy.timeKey(it.name) }?.also { queue.remove(it) }
             }
             if (job == null) {
                 val waiting = synchronized(queue) { queue.isNotEmpty() }

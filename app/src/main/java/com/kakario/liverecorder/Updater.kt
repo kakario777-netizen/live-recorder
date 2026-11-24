@@ -114,8 +114,9 @@ class Updater(private val a: Activity) {
                         "지금 업데이트하면 앱이 잠깐 껐다 켜져요.\n'나중에'를 누르면 앱을 나갈 때 알아서 업데이트해요." +
                         if (RecordService.running) "\n\n녹화 중이에요. 업데이트하면 녹화가 10~30초 끊겼다가 같은 파일에 자동으로 이어져요." else "")
                     .setPositiveButton("지금 업데이트") { _, _ ->
-                        if (ConvertService.current != null || Tidy.busy()) toast("변환·정리가 끝나면 업데이트할게요")
-                        else install(f, relaunch = !RecordService.running)
+                        // 정리·업로드·변환은 멈추고 업데이트부터 (하던 건 저장돼 있어서 업데이트 뒤 이어서 함)
+                        if (Tidy.busy() || Uploader.busy() || ConvertService.current != null) RecordService.addLog("업데이트 먼저 → 정리·업로드 잠시 멈춤 (업데이트 뒤 이어서)")
+                        install(f, relaunch = !RecordService.running)
                     }
                     .setNegativeButton("나중에", null)
                     .show()
@@ -126,7 +127,7 @@ class Updater(private val a: Activity) {
     /** 앱을 나갈 때: 받아 둔 업데이트가 있고 녹화·변환 중이 아니면 조용히 설치 */
     fun installOnLeave() {
         val f = readyApk ?: return
-        if (working() || !f.exists() || !a.packageManager.canRequestPackageInstalls()) return
+        if (!f.exists() || !a.packageManager.canRequestPackageInstalls()) return   // 녹화·정리 중이어도 업데이트 먼저 (뒤에 이어서)
         readyApk = null
         install(f, relaunch = false)
     }

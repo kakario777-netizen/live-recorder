@@ -35,6 +35,7 @@ object CloudBm {
     fun setRecordHere(ctx: Context, on: Boolean) { if (on && lockedByOther(ctx)) return; if (!on && confirmed(ctx)) return; if (on != recordHere(ctx)) prefs(ctx).edit().putBoolean("recordHere", on).putLong("ver", 0).putBoolean("dirty", false).apply() }
 
     @Volatile var lastResult = ""; private set
+    @Volatile var appCtxRef: Context? = null
 
     fun deviceId(ctx: Context): String {
         val p = prefs(ctx)
@@ -109,12 +110,50 @@ object CloudBm {
             val row = JSONArray().put(name).put(g).put(if (g == 3) "" else s.detail().take(70))
             if (!s.pageUrl.contains("stripchat.com/$name", true)) row.put(s.pageUrl.take(80))
             size += row.toString().toByteArray().size + 1
-            if (size > 3300) { o.put("x", "… 외 ${l.size - a.length()}개"); break }
+            if (size > 2300) { o.put("x", "… 외 ${l.size - a.length()}개"); break }
             a.put(row)
         }
-        val extra = listOfNotNull(Tidy.current?.let { "정리 중 ${Tidy.percent}% ${it.name.take(40)}" }, Uploader.current?.let { "업로드 중 ${Uploader.percent}% ${it.name.take(40)}" })
-        if (extra.isNotEmpty() && !o.has("x")) o.put("x", extra.joinToString("\n"))
+        appCtxRef?.let { o.put("w", workJson(it)) }
         return o.put("s", a).toString()
+    }
+
+    /** 정리·업로드 진행 상황 (작게) */
+    fun workJson(ctx: Context): JSONObject {
+        val o = JSONObject()
+        Tidy.current?.let { o.put("tc", JSONArray().put(it.name.take(48)).put(Tidy.percent).put(if (Tidy.converting) 1 else 0)) }
+        val tq = Tidy.queuedNames(); o.put("tq", tq.size); o.put("tqn", JSONArray(tq.take(4).map { it.take(48) }))
+        o.put("wc", Tidy.waitingCount())
+        Uploader.current?.let { o.put("uc", JSONArray().put(it.name.take(48)).put(Uploader.percent)) }
+        val uq = Uploader.queuedNames(); o.put("uq", uq.size); o.put("uqn", JSONArray(uq.take(4).map { it.take(60) }))
+        val ud = Uploader.history(ctx).filter { !it.name.startsWith("[녹화폰]") }.sortedByDescending { it.time }.take(4)
+        o.put("ud", JSONArray(ud.map { JSONArray().put(it.name.take(48)).put(it.time) }))
+        return o
+    }
+    /** 정리·업로드 상황을 사람이 읽는 줄로 */
+    fun workLines(w: JSONObject): List<Pair<String, String>> {   // (색, 글)
+        val out = ArrayList<Pair<String, String>>()
+        val fmt = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.KOREA)
+        w.optJSONArray("tc")?.let { out.add("#6A1B9A" to ((if (it.optInt(2) == 1) "H.265 변환 중 " else "정리 중 ") + "${it.optInt(1)}% · ${it.optString(0)}")) }
+        val tq = w.optInt("tq"); if (tq > 0) out.add("#6A1B9A" to "정리 대기 ${tq}개 (오래된 것부터): " + (0 until (w.optJSONArray("tqn")?.length() ?: 0)).joinToString(", ") { w.getJSONArray("tqn").getString(it) })
+        val wc = w.optInt("wc"); if (wc > 0) out.add("#EF6C00" to "충전 대기 ${wc}개 (H.264 → 충전기 꽂거나 80% 넘으면 변환)")
+        w.optJSONArray("uc")?.let { out.add("#2E7D32" to "업로드 중 ${it.optInt(1)}% · ${it.optString(0)}") }
+        val uq = w.optInt("uq"); if (uq > 0) out.add("#2E7D32" to "업로드 대기 ${uq}개 (오래된 것부터): " + (0 until (w.optJSONArray("uqn")?.length() ?: 0)).joinToString(", ") { w.getJSONArray("uqn").getString(it) })
+        if (out.isEmpty()) out.add("#888888" to "정리·업로드할 것 없음")
+        val ud = w.optJSONArray("ud")
+        if (ud != null && ud.length() > 0) out.add("#555555" to "최근 업로드 완료: " + (0 until ud.length()).joinToString(" / ") { ud.getJSONArray(it).let { a -> a.optString(0) + " (" + fmt.format(java.util.Date(a.optLong(1))) + ")" } })
+        return out
+    }
+
+    /** 정리·업로드 카드 (녹화폰 현황 / 뷰어 공통) */
+    fun fillWork(box: android.widget.LinearLayout, w: JSONObject) {
+        val c = box.context; val d = c.resources.displayMetrics.density
+        box.removeAllViews()
+        box.addView(android.widget.TextView(c).apply { text = "정리 · 업로드"; textSize = 13f; setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(android.graphics.Color.parseColor("#6A1B9A")); setPadding((4 * d).toInt(), (10 * d).toInt(), 0, (6 * d).toInt()) })
+        val card = android.widget.LinearLayout(c).apply { orientation = android.widget.LinearLayout.VERTICAL; setPadding((12 * d).toInt(), (8 * d).toInt(), (12 * d).toInt(), (8 * d).toInt())
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(android.graphics.Color.WHITE); cornerRadius = 12 * d } }
+        for ((col, t) in workLines(w)) card.addView(android.widget.TextView(c).apply { text = t; textSize = 13f; setTextColor(android.graphics.Color.parseColor(col)); setPadding(0, (3 * d).toInt(), 0, (3 * d).toInt()) })
+        box.addView(card)
     }
 
     /** 뷰어 → 녹화폰: 중지·다시 시도 */
@@ -154,6 +193,7 @@ object CloudBm {
 
     /** 30초마다 확인 (앱·녹화 서비스가 살아 있는 동안) */
     fun startLoop(ctx: Context) {
+        appCtxRef = ctx.applicationContext
         if (loopOn) return
         loopOn = true
         val app = ctx.applicationContext
