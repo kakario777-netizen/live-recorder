@@ -225,7 +225,7 @@ object Tidy {
         current?.name == name -> (if (converting && !remuxing) "H.265 변환 중… " else "정리 중… ") + "$percent%"
         synchronized(queue) { failed.any { it.name == name } } -> "변환 실패 (H.264 보관)"
         synchronized(queue) { waitCharge.any { it.name == name } } -> "충전 대기 (H.265 변환)"
-        synchronized(queue) { queue.any { it.name == name } } -> appCtx?.let { if (isTidied(it, name)) "변환 대기 (앞 파일 업로드 끝나면)" else null } ?: "정리 대기"
+        synchronized(queue) { queue.any { it.name == name } } -> appCtx?.let { if (isTidied(it, name)) "변환 대기 (차례대로)" else null } ?: "정리 대기"
         else -> null
     }
 
@@ -275,8 +275,8 @@ object Tidy {
     }
 
     /**
-     * 순서: ① 정리(빠름)를 오래된 것부터 먼저 전부 → ② 변환은 한 파일씩, 그 파일 업로드가 끝나야 다음 변환.
-     * (변환만 계속하다 아무것도 안 올라가는 일 없게)
+     * 순서: ① 정리(빠름)를 오래된 것부터 먼저 전부 → ② 변환은 오래된 것부터 한 파일씩.
+     * 업로드가 쉬지 않게: 하나 올리는 동안 다음 하나를 변환해 두고, 변환본이 이미 1개 기다리면 그 이상은 앞서가지 않음.
      */
     private fun next(ctx: Context) {
         var waitUpload = false

@@ -100,8 +100,8 @@ object Uploader {
     }
 
     fun busy(): Boolean = current != null || synchronized(queue) { queue.isNotEmpty() }
-    /** 지금 올리는 중이거나 바로 올릴 게 있음 (실패해서 몇 분 뒤 다시 하는 건 빼고) */
-    fun busyNow(): Boolean = current != null || synchronized(queue) { queue.any { it.tries == 0 } }
+    /** 올리는 것 말고 바로 다음에 올릴 게 이미 기다리고 있음 (실패해서 몇 분 뒤 다시 하는 건 빼고) */
+    fun busyNow(): Boolean = synchronized(queue) { queue.any { it.tries == 0 } }
     fun queuedNames(): List<String> = synchronized(queue) { queue.sortedBy { Tidy.timeKey(it.name) }.map { it.name + if (it.tries > 0) " (실패 ${it.tries}번, 다시 대기)" else "" } }
 
     fun statusOf(name: String): String? {
@@ -240,6 +240,7 @@ object Uploader {
                 Thread.sleep(5000); continue
             }
             current = job; percent = 0; onChange?.invoke()
+            Tidy.kick(ctx)   // 이걸 올리는 동안 다음 파일 변환 (업로드가 쉬지 않게)
             val ok = try { upload(ctx, job); true } catch (e: Exception) {
                 job.lastError = e.message ?: e.javaClass.simpleName; false
             }

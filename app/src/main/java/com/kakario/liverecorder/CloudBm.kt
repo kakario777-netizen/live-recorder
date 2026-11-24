@@ -134,7 +134,7 @@ object CloudBm {
         val out = ArrayList<Pair<String, String>>()
         val fmt = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.KOREA)
         w.optJSONArray("tc")?.let { out.add("#6A1B9A" to ((if (it.optInt(2) == 1) "H.265 변환 중 " else "정리 중 ") + "${it.optInt(1)}% · ${it.optString(0)}")) }
-        val tq = w.optInt("tq"); if (tq > 0) out.add("#6A1B9A" to "정리·변환 대기 ${tq}개 (정리 먼저, 변환은 한 파일씩 업로드까지 끝내고 다음): " + (0 until (w.optJSONArray("tqn")?.length() ?: 0)).joinToString(", ") { w.getJSONArray("tqn").getString(it) })
+        val tq = w.optInt("tq"); if (tq > 0) out.add("#6A1B9A" to "정리·변환 대기 ${tq}개 (정리 먼저, 변환은 업로드 바로 다음 것만 미리): " + (0 until (w.optJSONArray("tqn")?.length() ?: 0)).joinToString(", ") { w.getJSONArray("tqn").getString(it) })
         val wc = w.optInt("wc"); if (wc > 0) out.add("#EF6C00" to "충전 대기 ${wc}개 (H.264 → 충전기 꽂거나 80% 넘으면 변환)")
         w.optJSONArray("uc")?.let { out.add("#2E7D32" to "업로드 중 ${it.optInt(1)}% · ${it.optString(0)}") }
         val uq = w.optInt("uq"); if (uq > 0) out.add("#2E7D32" to "업로드 대기 ${uq}개 (오래된 것부터): " + (0 until (w.optJSONArray("uqn")?.length() ?: 0)).joinToString(", ") { w.getJSONArray("uqn").getString(it) })
