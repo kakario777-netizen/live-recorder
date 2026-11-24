@@ -225,7 +225,7 @@ object Tidy {
         current?.name == name -> (if (converting && !remuxing) "H.265 변환 중… " else "정리 중… ") + "$percent%"
         synchronized(queue) { failed.any { it.name == name } } -> "변환 실패 (H.264 보관)"
         synchronized(queue) { waitCharge.any { it.name == name } } -> "충전 대기 (H.265 변환)"
-        synchronized(queue) { queue.any { it.name == name } } -> "정리 대기"
+        synchronized(queue) { queue.any { it.name == name } } -> appCtx?.let { if (isTidied(it, name)) "변환 대기 (앞 파일 업로드 끝나면)" else null } ?: "정리 대기"
         else -> null
     }
 
@@ -268,14 +268,30 @@ object Tidy {
         handler?.post { if (current == null) next(app) }
     }
 
+    /** 업로드가 끝나면 다음 변환을 시작하게 깨움 */
+    fun kick(ctx: Context) {
+        val app = ctx.applicationContext
+        handler?.post { if (current == null && synchronized(queue) { queue.isNotEmpty() }) next(app) }
+    }
+
+    /**
+     * 순서: ① 정리(빠름)를 오래된 것부터 먼저 전부 → ② 변환은 한 파일씩, 그 파일 업로드가 끝나야 다음 변환.
+     * (변환만 계속하다 아무것도 안 올라가는 일 없게)
+     */
     private fun next(ctx: Context) {
-        val job = synchronized(queue) { queue.removeFirstOrNull() }
+        var waitUpload = false
+        val job = synchronized(queue) {
+            val j = queue.firstOrNull { !isTidied(ctx, it.name) }
+                ?: queue.firstOrNull()?.let { if (Uploader.busyNow()) { waitUpload = true; null } else it }
+            j?.also { queue.remove(it) }
+        }
         if (job == null) {
             current = null
             onChange?.invoke()
-            onIdle?.invoke()
+            if (!waitUpload) onIdle?.invoke()
             return
         }
+        val tidied = isTidied(ctx, job.name)
         // 아직 방송 칸이 쓰고 있는(또는 이어 쓸) 파일이면 건드리지 않고 나중으로
         if (RecordService.isActiveFile(job.name)) {
             // 빼 두기만 함: 녹화가 끝나면 방송 칸이 다시 넣고, 아니면 자동 정리(5분마다)가 찾아서 넣음
@@ -296,7 +312,7 @@ object Tidy {
         // 먼저 중간에 중복으로 들어간 시작 정보를 빼 둔다 (이어 녹화·업데이트 지점에서 재생이 멈추던 문제)
         val dedup = File(workDir, "dedup_" + job.name)
         val jp = job.path
-        if (jp != null) {
+        if (jp != null && !tidied) {
             try {
                 val n = Mp4.removeDuplicateInits(File(jp), dedup)
                 if (n > 0) {
@@ -309,7 +325,7 @@ object Tidy {
         // H.264면 정리하면서 H.265로 변환 (충전 중일 때만, 하드웨어 인코더 있을 때만)
         val mime = Codec.probeUri(ctx, input)
         converting = autoH265(ctx) && mime == android.media.MediaFormat.MIMETYPE_VIDEO_AVC && Codec.phoneHasHevcEncoder()
-        if (converting && !job.force && !charging(ctx)) {
+        if (converting && tidied && !job.force && !charging(ctx)) {
             // H.264는 변환 없이 올리지 않음: 충전기를 꽂을 때까지 기다림
             converting = false
             dedupUsed?.delete(); dedupUsed = null
@@ -326,7 +342,7 @@ object Tidy {
         var srcFile: File? = dedupUsed ?: jp?.let { File(it) }
         var videoBps = 0L
         val rem = File(workDir, "remux_" + job.name).also { it.delete() }
-        if (srcFile != null) {
+        if (srcFile != null && !tidied) {
             remuxing = true
             val err = Remux.run(srcFile, rem) { p -> percent = p; onChange?.invoke() }
             remuxing = false
@@ -343,9 +359,29 @@ object Tidy {
                     finish(ctx, job, out, true, "")
                     return
                 }
+                // 변환할 파일: 정리본으로 먼저 바꿔 두고, 변환은 차례가 오면 (앞 파일 업로드가 끝난 뒤)
+                rem.renameTo(out); dedupUsed = null
+                try { replace(ctx, job, out); markTidied(ctx, job.name); RecordService.addLog("정리 완료 → 변환·업로드 차례 기다림: ${job.name}") }
+                catch (e: Exception) { RecordService.addLog("정리본 저장 실패(원본 유지): ${job.name} ${e.message}"); markTidied(ctx, job.name) }
+                out.delete()
+                current = null; converting = false
+                synchronized(queue) { queue.add(job); sortQueue() }
+                persist(); onChange?.invoke()
+                h.post { next(ctx) }
+                return
             } else {
                 rem.delete()
                 RecordService.addLog("직접 다시 쓰기 실패 → 기존 방식으로 정리: ${job.name} ($err)")
+                if (converting) {
+                    // 변환은 차례가 오면 (그때 변환하면서 같이 정리됨)
+                    markTidied(ctx, job.name)
+                    dedupUsed?.let { d -> try { replace(ctx, job, d) } catch (_: Exception) {} ; d.delete() }; dedupUsed = null
+                    current = null; converting = false
+                    synchronized(queue) { queue.add(job); sortQueue() }
+                    persist(); onChange?.invoke()
+                    h.post { next(ctx) }
+                    return
+                }
             }
         }
         percent = 0
