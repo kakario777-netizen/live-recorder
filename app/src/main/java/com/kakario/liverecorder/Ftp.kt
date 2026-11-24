@@ -232,7 +232,10 @@ object Uploader {
             val now = System.currentTimeMillis()
             val job = synchronized(queue) {
                 // 오래된 녹화부터 차례대로 (실패해서 기다리는 건 시간이 되면)
-                queue.filter { it.nextAt <= now }.minByOrNull { Tidy.timeKey(it.name) }?.also { queue.remove(it) }
+                // 많이 밀리면(변환 대기+업로드 대기 100개 이상) 짧은(작은) 것부터, 아니면 오래된 것부터
+                val many = queue.size + Tidy.queuedNames().size >= Tidy.MANY
+                val ready = queue.filter { it.nextAt <= now }
+                (if (many) ready.minByOrNull { File(it.path).length() } else ready.minByOrNull { Tidy.timeKey(it.name) })?.also { queue.remove(it) }
             }
             if (job == null) {
                 val waiting = synchronized(queue) { queue.isNotEmpty() }
