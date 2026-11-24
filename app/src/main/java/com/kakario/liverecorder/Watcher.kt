@@ -27,7 +27,7 @@ object Watcher {
     @Volatile private var learning = false
     private val learnFailAt = ConcurrentHashMap<String, Long>()
 
-    private fun key(url: String) = url.trimEnd('/').lowercase()
+    fun key(url: String) = url.trimEnd('/').lowercase()
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("watch", Context.MODE_PRIVATE)
 
     /** 생방 대기는 녹화폰에서만 (원격폰은 뷰어든 다운로드든 대기 없음) */
@@ -58,7 +58,7 @@ object Watcher {
             if (list.isEmpty()) { status.clear(); Thread.sleep(15_000); continue }
             val t0 = System.currentTimeMillis()
             val recording = RecordService.list().map { key(it.pageUrl) }.toSet()
-            CloudBm.renewClaims(ctx, recording)
+            CloudBm.renewNow(ctx)
             for (b in list) {
                 if (RecordService.instance == null) return
                 val k = key(b.url)

@@ -88,17 +88,40 @@ object CloudBm {
     // ---------- 녹화 나누기: 방송이 켜지면 녹화폰끼리 먼저 잡은 폰이 받음 ----------
     /** 이 방송을 내가 받아도 되나? (녹화폰이 한 대면 항상 OK, 서버에 못 닿으면 일단 받음) */
     fun claim(ctx: Context, key: String, active: Int): Boolean {
-        if (recCount(ctx) <= 1) return true
+        if (!on(ctx) || !recordHere(ctx)) return true
         try { Thread.sleep(active * 3000L) } catch (_: Exception) {}   // 많이 받는 폰은 늦게 → 한가한 폰이 먼저
         return try {
             val r = post(url(ctx) + "?op=claim&s=" + java.net.URLEncoder.encode(key, "UTF-8") + "&n=$active&" + auth(ctx), "")
             if (r.has("ok")) r.optBoolean("ok") else true
         } catch (_: Exception) { true }
     }
-    /** 받는 중인 방송은 계속 내 것이라고 알림 (3분 넘게 소식 없으면 다른 폰이 이어받음) */
-    fun renewClaims(ctx: Context, keys: Collection<String>) {
-        if (recCount(ctx) <= 1 || keys.isEmpty()) return
-        try { post(url(ctx) + "?op=renew&" + auth(ctx), keys.joinToString("\n")) } catch (_: Exception) {}
+    /**
+     * 받는 중인 자동 녹화는 계속 내 것이라고 1분마다 알림 (3분 넘게 소식 없으면 다른 폰이 이어받음).
+     * 서버가 '다른 폰 것'이라고 하면 이 폰은 그 방송을 멈춤 → 두 폰이 같이 받지 않게
+     */
+    @Volatile private var renewAt = 0L
+    fun renewNow(ctx: Context) {
+        if (!on(ctx) || !recordHere(ctx) || System.currentTimeMillis() - renewAt < 20_000L) return
+        renewAt = System.currentTimeMillis()
+        val mine = RecordService.list().filter { it.watch || Watcher.isWatched(ctx, it.pageUrl) }.associateBy { Watcher.key(it.pageUrl) }
+        if (mine.isEmpty()) return
+        try {
+            val r = post(url(ctx) + "?op=renew&" + auth(ctx), mine.keys.joinToString("\n"))
+            val lost = r.optJSONArray("lost") ?: return
+            for (i in 0 until lost.length()) {
+                val sl = mine[lost.optString(i)] ?: continue
+                RecordService.addLog("다른 녹화폰이 이미 받는 방송 → 이 폰은 멈춤: ${sl.streamer.ifEmpty { sl.host }}")
+                RecordService.stopOne(ctx, sl.id)
+            }
+        } catch (_: Exception) {}
+    }
+    /** 1분마다 갱신 (지켜보기 주기와 상관없이) */
+    @Volatile private var renewLoop = false
+    fun startRenewLoop(ctx: Context) {
+        if (renewLoop) return
+        renewLoop = true
+        val app = ctx.applicationContext
+        Thread({ while (true) { try { Thread.sleep(60_000L); renewNow(app) } catch (_: InterruptedException) { break } catch (_: Exception) {} } }, "claimRenew").apply { isDaemon = true }.start()
     }
     /** 확정 켜기/끄기 부탁 → 다음 맞추기 때 저장소에 반영 (다른 폰이 이미 확정이면 실패) */
     fun setConfirm(ctx: Context, on: Boolean) { prefs(ctx).edit().putInt("wantRec", if (on) 1 else 0).putBoolean("dirty", true).apply() }
@@ -251,6 +274,7 @@ object CloudBm {
     /** 30초마다 확인 (앱·녹화 서비스가 살아 있는 동안) */
     fun startLoop(ctx: Context) {
         appCtxRef = ctx.applicationContext
+        startRenewLoop(ctx)
         if (loopOn) return
         loopOn = true
         val app = ctx.applicationContext
