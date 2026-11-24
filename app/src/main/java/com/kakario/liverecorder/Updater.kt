@@ -35,10 +35,9 @@ class Updater(private val a: Activity) {
     var readyApk: File? = null; private set
 
     companion object {
-        // 배포 전용 공개 저장소 (코드 저장소는 비공개). 정식판 = 최신 릴리스(v버전), 실험판 = 가장 최근 프리릴리스
-        private const val REPO = "kakario777-netizen/live-recorder-release"
-        val API = if (BuildConfig.LAB) "https://api.github.com/repos/$REPO/releases?per_page=15" else "https://api.github.com/repos/$REPO/releases/latest"
-        val PAGE = "https://github.com/$REPO/releases"
+        private val TAG = if (BuildConfig.LAB) "lab" else "latest"
+        val API = "https://api.github.com/repos/kakario777-netizen/live-recorder/releases/tags/$TAG"
+        val PAGE = "https://github.com/kakario777-netizen/live-recorder/releases/tag/$TAG"
 
         fun working() = RecordService.running || ConvertService.current != null
     }
@@ -65,9 +64,7 @@ class Updater(private val a: Activity) {
                 c.connectTimeout = 15000; c.readTimeout = 15000
                 c.setRequestProperty("Accept", "application/vnd.github+json")
                 if (c.responseCode != 200) throw Exception("서버 응답 ${c.responseCode}")
-                val txt = c.inputStream.bufferedReader().use { it.readText() }
-                val o = if (BuildConfig.LAB) org.json.JSONArray(txt).let { arr -> (0 until arr.length()).map { arr.getJSONObject(it) }.firstOrNull { it.optBoolean("prerelease") } ?: throw Exception("실험판 릴리스 없음") }
-                        else JSONObject(txt)
+                val o = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
                 c.disconnect()
                 val build = Regex("#(\\d+)").find(o.optString("name"))?.groupValues?.get(1)?.toIntOrNull() ?: 0
                 var url = ""; var size = 0L
