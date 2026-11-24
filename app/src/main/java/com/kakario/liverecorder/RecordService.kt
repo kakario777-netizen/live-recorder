@@ -379,7 +379,7 @@ class RecordService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         shuttingDown = false
-        try { Uploader.cleanTrash() } catch (_: Exception) {}
+        try { Uploader.cleanTrash(this) } catch (_: Exception) {}
         when (intent?.action) {
             ACTION_STOP_ALL -> {
                 list().forEach { it.stop() }

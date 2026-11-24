@@ -67,6 +67,7 @@ class PushService : FirebaseMessagingService() {
         // 뷰어가 보낸 명령(중지·다시 시도) → 녹화폰이 실행하고 새 현황을 답함
         if (d["t"] == "note" && d["src"] != CloudBm.deviceId(this) && CloudBm.recordHere(this) && d["title"] == "명령") {
             val (cmd, name) = d["body"].orEmpty().split('|', limit = 2).let { (it.getOrNull(0) ?: "") to (it.getOrNull(1) ?: "") }
+            if (cmd == "trashh") name.toIntOrNull()?.let { Uploader.setTrashHours(this, it) }
             if (cmd == "trash") { val (n, mb) = Uploader.emptyTrash(); CloudBm.notifyRemote(this, "휴지통 비움", "${n}개 · ${mb}MB", force = true) }
             val sl = RecordService.list().firstOrNull { it.streamer.equals(name, true) || it.host == name }
             if (sl != null) {

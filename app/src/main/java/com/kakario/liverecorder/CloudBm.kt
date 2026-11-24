@@ -126,7 +126,7 @@ object CloudBm {
         Uploader.current?.let { o.put("uc", JSONArray().put(it.name.take(48)).put(Uploader.percent)) }
         val uq = Uploader.queuedNames(); o.put("uq", uq.size); o.put("uqn", JSONArray(uq.take(4).map { it.take(60) }))
         val ud = Uploader.history(ctx).filter { !it.name.startsWith("[녹화폰]") }.sortedByDescending { it.time }.take(4)
-        Uploader.trashFiles().let { t -> o.put("tr", JSONArray().put(t.size).put(t.sumOf { it.length() } / 1024 / 1024)) }
+        Uploader.trashFiles().let { t -> o.put("tr", JSONArray().put(t.size).put(t.sumOf { it.length() } / 1024 / 1024).put(Uploader.trashLabel(ctx))) }
         o.put("ud", JSONArray(ud.map { JSONArray().put(it.name.take(48)).put(it.time) }))
         return o
     }
@@ -140,7 +140,7 @@ object CloudBm {
         w.optJSONArray("uc")?.let { out.add("#2E7D32" to "업로드 중 ${it.optInt(1)}% · ${it.optString(0)}") }
         val uq = w.optInt("uq"); if (uq > 0) out.add("#2E7D32" to "업로드 대기 ${uq}개 (오래된 것부터): " + (0 until (w.optJSONArray("uqn")?.length() ?: 0)).joinToString(", ") { w.getJSONArray("uqn").getString(it) })
         if (out.isEmpty()) out.add("#888888" to "정리·업로드할 것 없음")
-        w.optJSONArray("tr")?.let { if (it.optInt(0) > 0) out.add("#888888" to "휴지통 ${it.optInt(0)}개 · ${it.optLong(1)}MB (업로드 끝난 원본, ${Uploader.TRASH_DAYS}일 뒤 자동 삭제)") }
+        w.optJSONArray("tr")?.let { if (it.optInt(0) > 0) out.add("#888888" to "휴지통 ${it.optInt(0)}개 · ${it.optLong(1)}MB (업로드 끝난 원본, ${it.optString(2, "하루")} 뒤 자동 삭제)") }
         val ud = w.optJSONArray("ud")
         if (ud != null && ud.length() > 0) out.add("#555555" to "최근 업로드 완료: " + (0 until ud.length()).joinToString(" / ") { ud.getJSONArray(it).let { a -> a.optString(0) + " (" + fmt.format(java.util.Date(a.optLong(1))) + ")" } })
         return out

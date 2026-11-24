@@ -213,6 +213,7 @@ object Tidy {
     private val chargeCheck = object : Runnable {
         override fun run() {
             val ctx = appCtx ?: return
+            try { Uploader.cleanTrash(ctx) } catch (_: Exception) {}
             val ok = charging(ctx)
             if (synchronized(queue) { waitCharge.isNotEmpty() } && ok) onPowerConnected(ctx)
             // 변환 중인데 80% 아래로 떨어졌고 충전기도 없으면 멈춤
@@ -446,7 +447,7 @@ object Tidy {
                 val before = job.path?.let { File(it).length() } ?: 0L
                 replace(ctx, job, out, keepOriginalInTrash = converting)
                 markTidied(ctx, job.name)
-                if (converting) "정리 + H.265 변환 완료: ${job.name} (${before / 1024 / 1024}MB → ${out.length() / 1024 / 1024}MB, H.264 원본은 휴지통 7일)"
+                if (converting) "정리 + H.265 변환 완료: ${job.name} (${before / 1024 / 1024}MB → ${out.length() / 1024 / 1024}MB, H.264 원본은 휴지통 ${Uploader.trashLabel(ctx)})"
                 else "정리 완료: ${job.name}"
             } catch (e: Exception) {
                 "정리본 저장 실패(원본 유지): ${e.message}"

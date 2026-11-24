@@ -137,7 +137,7 @@ class FilesActivity : Activity() {
                 Uploader.current?.let { append(" · 업로드 중: ${it.name} ${Uploader.percent}%") }
                 if (Uploader.lastResult.isNotBlank()) append("\n최근: ${Uploader.lastResult}")
             } else append("\nNAS 자동 업로드 꺼짐")
-            append(" · 휴지통 ${Uploader.trashFiles().size}개 (${Uploader.TRASH_DAYS}일 뒤 자동 삭제)")
+            append(" · 휴지통 ${Uploader.trashFiles().size}개 (${Uploader.trashLabel(this@FilesActivity)} 뒤 자동 삭제)")
             if (cur != null) append("\n변환 중: ${cur.name} ${ConvertService.percent}%")
             else if (ConvertService.lastResult.isNotBlank()) append("\n최근: ${ConvertService.lastResult}")
         }
@@ -539,8 +539,8 @@ class FilesActivity : Activity() {
         if (files.isEmpty()) { Toast.makeText(this, "휴지통이 비어 있어요", Toast.LENGTH_SHORT).show(); return }
         val fmt = SimpleDateFormat("MM/dd HH:mm", Locale.KOREA)
         val names = files.map {
-            val left = Uploader.TRASH_DAYS - ((System.currentTimeMillis() - it.lastModified()) / (24 * 3600_000L)).toInt()
-            "${it.name}\n${it.length() / 1024 / 1024}MB · ${fmt.format(Date(it.lastModified()))} 업로드 · ${left}일 뒤 삭제"
+            val left = (Uploader.trashHours(this) - ((System.currentTimeMillis() - it.lastModified()) / 3600_000L).toInt()).coerceAtLeast(0)
+            "${it.name}\n${it.length() / 1024 / 1024}MB · ${fmt.format(Date(it.lastModified()))} 업로드 · ${Uploader.hoursLabel(left.coerceAtLeast(1))} 안에 삭제"
         }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle("휴지통 ${files.size}개 · ${files.sumOf { it.length() } / 1024 / 1024}MB")

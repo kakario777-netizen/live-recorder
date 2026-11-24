@@ -821,6 +821,16 @@ class MainActivity : Activity() {
         row("폰 역할 · 즐겨찾기 맞추기", "지금: $role") { showCloudBm() }
         line()
         if (!CloudBm.recordHere(this)) { row("녹화폰 현황 보기", "녹화폰에서 받는 중인 방송") { startActivity(Intent(ctx, RemoteStatusActivity::class.java)) }; line() }
+        row("휴지통 보관", "업로드 끝난 원본을 지우기 전까지 · 지금: " + (if (CloudBm.viewer(this)) "녹화폰에 적용" else Uploader.trashLabel(this))) {
+            val ch = Uploader.TRASH_CHOICES
+            AlertDialog.Builder(ctx).setTitle(if (CloudBm.viewer(ctx)) "녹화폰 휴지통 보관 시간" else "휴지통 보관 시간")
+                .setSingleChoiceItems(ch.map { Uploader.hoursLabel(it) }.toTypedArray(), ch.indexOf(Uploader.trashHours(ctx))) { d, i ->
+                    Uploader.setTrashHours(ctx, ch[i])
+                    if (CloudBm.viewer(ctx)) CloudBm.sendCommand(ctx, "trashh", ch[i].toString())
+                    Toast.makeText(ctx, "휴지통 보관: ${Uploader.hoursLabel(ch[i])}", Toast.LENGTH_SHORT).show(); d.dismiss()
+                }.setNegativeButton("닫기", null).show()
+        }
+        line()
         row("NAS 업로드", "정리된 파일 자동 업로드 설정") { innerNav = true; startActivity(Intent(ctx, FilesActivity::class.java).putExtra("openFtp", true)) }
 
         section("화면")

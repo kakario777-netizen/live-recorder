@@ -91,7 +91,6 @@ object Uploader {
     private var worker: Thread? = null
     private var loaded = false
 
-    const val TRASH_DAYS = 7
 
     fun recDir(): File = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), Saver.DIR)
     fun trashDir(): File = File(recDir(), "휴지통").apply {
@@ -250,7 +249,7 @@ object Uploader {
                 addHistory(ctx, job)
                 val mb = try { File(job.path).let { if (it.exists()) it.length() else File(trashDir(), it.name).length() } / 1024 / 1024 } catch (e: Exception) { 0L }
                 CloudBm.notifyRemote(ctx, "업로드 완료", "${job.name}" + (if (mb > 0) " (${mb}MB)" else ""))
-                RecordService.addLog("$lastResult (원본은 휴지통으로, ${TRASH_DAYS}일 뒤 삭제)")
+                RecordService.addLog("$lastResult (원본은 휴지통으로, ${trashLabel(ctx)} 뒤 삭제)")
             } else {
                 job.tries++
                 val waitMin = when (job.tries) { 1 -> 1; 2 -> 5; 3 -> 15; else -> 30 }
@@ -416,9 +415,16 @@ object Uploader {
         return listOf(File("$base.ass"), File("$base.chat.txt")).filter { it.exists() }
     }
 
-    /** 휴지통에서 7일 지난 파일 삭제 */
-    fun cleanTrash() {
-        val limit = System.currentTimeMillis() - TRASH_DAYS * 24 * 3600_000L
+    /** 휴지통 보관 시간 (설정, 기본 하루) */
+    val TRASH_CHOICES = intArrayOf(1, 3, 6, 12, 24, 48, 72, 120, 168)
+    fun trashHours(ctx: Context): Int = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getInt("trashHours", 24)
+    fun setTrashHours(ctx: Context, h: Int) { ctx.getSharedPreferences("main", Context.MODE_PRIVATE).edit().putInt("trashHours", h).apply(); RecordService.addLog("휴지통 보관 시간: ${hoursLabel(h)}"); cleanTrash(ctx) }
+    fun hoursLabel(h: Int): String = when { h < 24 -> "${h}시간"; h % 24 == 0 -> if (h == 168) "일주일" else "${h / 24}일"; else -> "${h}시간" }
+    fun trashLabel(ctx: Context) = hoursLabel(trashHours(ctx))
+
+    /** 휴지통에서 보관 시간 지난 파일 삭제 */
+    fun cleanTrash(ctx: Context) {
+        val limit = System.currentTimeMillis() - trashHours(ctx) * 3600_000L
         trashDir().listFiles()?.forEach { if (it.name != ".nomedia" && it.lastModified() < limit) it.delete() }
     }
 
