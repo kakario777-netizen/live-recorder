@@ -193,18 +193,25 @@ object Uploader {
     fun addNote(ctx: Context, title: String, body: String) {
         val p = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
         synchronized(this) {
-            val a = try { org.json.JSONArray(p.getString("uploadHistory", "[]")) } catch (e: Exception) { org.json.JSONArray() }
-            a.put(JSONObject().put("name", "[녹화폰] $title · $body").put("size", 0).put("time", System.currentTimeMillis()).put("dir", "녹화폰 알림"))
+            // 녹화폰 알림은 업로드 기록과 따로 (이 폰이 올린 것처럼 보이지 않게)
+            val a = try { org.json.JSONArray(p.getString("remoteNotes", "[]")) } catch (e: Exception) { org.json.JSONArray() }
+            a.put(JSONObject().put("title", title).put("body", body).put("time", System.currentTimeMillis()))
             val out = org.json.JSONArray()
-            val from = (a.length() - 3000).coerceAtLeast(0)
-            for (i in from until a.length()) out.put(a.get(i))
-            p.edit().putString("uploadHistory", out.toString()).apply()
+            for (i in (a.length() - 200).coerceAtLeast(0) until a.length()) out.put(a.get(i))
+            p.edit().putString("remoteNotes", out.toString()).apply()
         }
     }
 
     fun history(ctx: Context): List<Hist> = try {
         val a = org.json.JSONArray(ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getString("uploadHistory", "[]"))
-        (0 until a.length()).map { a.getJSONObject(it) }.map { Hist(it.optString("name"), it.optLong("size"), it.optLong("time"), it.optString("dir")) }
+        (0 until a.length()).map { a.getJSONObject(it) }.filter { !it.optString("name").startsWith("[녹화폰]") }   // 예전에 섞여 들어간 알림은 빼고
+            .map { Hist(it.optString("name"), it.optLong("size"), it.optLong("time"), it.optString("dir")) }
+    } catch (e: Exception) { emptyList() }
+
+    /** 녹화폰에서 받은 알림 (최근 것부터) */
+    fun notes(ctx: Context): List<Triple<String, String, Long>> = try {
+        val a = org.json.JSONArray(ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getString("remoteNotes", "[]"))
+        (0 until a.length()).map { a.getJSONObject(it) }.map { Triple(it.optString("title"), it.optString("body"), it.optLong("time")) }.reversed()
     } catch (e: Exception) { emptyList() }
 
     fun removeHistory(ctx: Context, name: String, time: Long) {

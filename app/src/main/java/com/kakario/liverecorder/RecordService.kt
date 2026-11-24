@@ -195,7 +195,10 @@ class RecordService : Service() {
 
         /** 업데이트 직후: 묻지 않고 바로 재개 */
         fun resumeAfterUpdate(ctx: Context) {
-            if (savedJobs(ctx).isEmpty()) return
+            val p = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
+            val work = (p.getString("tidyQueue", "[]") ?: "[]").length > 2 || (ctx.getSharedPreferences("ftp", Context.MODE_PRIVATE).getString("queue", "[]") ?: "[]").length > 2
+            // 즐겨찾기 자동 대기만 있어도(녹화 목록이 비어 있어도) 다시 켜야 대기·정리·업로드가 이어짐
+            if (savedJobs(ctx).isEmpty() && !Watcher.any(ctx) && !work && !CloudBm.recordHere(ctx)) return
             ctx.startForegroundService(Intent(ctx, RecordService::class.java).setAction(ACTION_RESUME).putExtra("why", "update"))
         }
 

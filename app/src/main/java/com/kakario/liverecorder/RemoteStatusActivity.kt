@@ -181,5 +181,14 @@ class RemoteStatusActivity : Activity() {
             listBox.addView(card)
         }
         o.optString("x").takeIf { it.isNotEmpty() }?.let { listBox.addView(TextView(this).apply { text = it; textSize = 12f; setTextColor(Color.parseColor("#666666")); setPadding(dp(6), dp(12), 0, 0) }) }
+        val notes = Uploader.notes(this).take(12)
+        if (notes.isNotEmpty()) {
+            val f = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.KOREA)
+            listBox.addView(TextView(this).apply { text = "녹화폰 알림 (최근)"; textSize = 13f; setTypeface(null, Typeface.BOLD); setTextColor(Color.parseColor("#455A64")); setPadding(dp(4), dp(14), 0, dp(6)) })
+            for ((t, b, at) in notes) listBox.addView(TextView(this).apply {
+                text = "${f.format(java.util.Date(at))}  [$t] $b"; textSize = 12f
+                setTextColor(Color.parseColor(if (t.contains("업로드")) "#2E7D32" else "#555555")); setPadding(dp(6), dp(2), 0, dp(2))
+            })
+        }
     }
 }
