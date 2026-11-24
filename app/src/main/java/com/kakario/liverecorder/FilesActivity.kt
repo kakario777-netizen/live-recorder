@@ -60,7 +60,7 @@ class FilesActivity : Activity() {
         })
 
         root.addView(CheckBox(this).apply {
-            text = "H.264 녹화는 H.265로 변환 후 업로드 (꺼 두면 정리만 하고 바로 업로드 — 기본 꺼짐)"
+            text = "H.264 녹화는 H.265로 변환 후 업로드 (기다림 없이 바로 변환 → 끝나면 바로 업로드. 꺼 두면 정리만 하고 업로드)"
             textSize = 13f
             isChecked = Tidy.autoH265(this@FilesActivity)
             setPadding(dp(4), 0, 0, 0)

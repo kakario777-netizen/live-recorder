@@ -107,7 +107,7 @@ object Tidy {
         }
         val moved = synchronized(queue) { val l = waitCharge.toList(); waitCharge.clear(); queue.addAll(l); sortQueue(); l.size }
         if (moved > 0) {
-            RecordService.addLog(if (autoH265(ctx)) "충전기 연결됨 → H.265 변환 시작 (${moved}개)" else "충전 대기 ${moved}개 → 변환 없이 업로드로")
+            RecordService.addLog("충전 대기하던 ${moved}개 → 바로 처리")
             onChange?.invoke()
             ensureThread()
             handler?.post { if (current == null) next(ctx) }
@@ -116,6 +116,7 @@ object Tidy {
 
     private fun onPowerDisconnected(ctx: Context) {
         val job = current ?: return
+        return   // 충전기를 뽑아도 변환은 계속 (기다리지 않음)
         if (!converting || job.force) return
         if (charging(ctx)) return   // 충전기를 뽑아도 배터리 80% 이상이면 계속 변환
         RecordService.addLog("배터리 80% 아래 + 충전기 없음 → 변환 멈춤 (충전기를 꽂으면 처음부터 다시 변환): ${job.name}")
@@ -146,12 +147,8 @@ object Tidy {
     @Volatile private var remuxing = false
 
     /** H.264로 녹화된 파일은 정리하면서 H.265로 변환 (기본 켜짐, 충전 중일 때만) */
-    /** H.265 변환 후 업로드 (기본 꺼짐: 업로드가 먼저 — 쌓인 파일을 줄이는 게 우선) */
-    fun autoH265(ctx: Context): Boolean {
-        val p = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
-        if (!p.getBoolean("uploadFirstV1", false)) p.edit().putBoolean("uploadFirstV1", true).putBoolean("autoH265", false).apply()
-        return p.getBoolean("autoH265", false)
-    }
+    /** H.265 변환 후 업로드 (설정, 기본 켜짐). 변환은 기다림 없이 바로 하고, 끝나면 곧바로 업로드 */
+    fun autoH265(ctx: Context): Boolean = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("autoH265", true)
 
     /**
      * 변환해도 되는지: 배터리 80% 이상이거나 충전기가 꽂혀 있으면 OK.
@@ -224,7 +221,7 @@ object Tidy {
             val ctx = appCtx ?: return
             try { Uploader.cleanTrash(ctx) } catch (_: Exception) {}
             val ok = charging(ctx)
-            if (synchronized(queue) { waitCharge.isNotEmpty() } && (ok || !autoH265(ctx))) onPowerConnected(ctx)
+            if (synchronized(queue) { waitCharge.isNotEmpty() }) onPowerConnected(ctx)   // 충전 대기 없이 바로 처리
             // 변환 중인데 80% 아래로 떨어졌고 충전기도 없으면 멈춤
             if (!ok && converting && current?.force != true) onPowerDisconnected(ctx)
             handler?.postDelayed(this, 60_000)
@@ -292,7 +289,7 @@ object Tidy {
         var waitUpload = false
         val job = synchronized(queue) {
             val j = queue.firstOrNull { !isTidied(ctx, it.name) }
-                ?: queue.firstOrNull()?.let { if (autoH265(ctx) && Uploader.busyNow()) { waitUpload = true; null } else it }
+                ?: queue.firstOrNull()
             j?.also { queue.remove(it) }
         }
         if (job == null) {
@@ -342,7 +339,7 @@ object Tidy {
         // H.264면 정리하면서 H.265로 변환 (충전 중일 때만, 하드웨어 인코더 있을 때만)
         val mime = Codec.probeUri(ctx, input)
         converting = autoH265(ctx) && mime == android.media.MediaFormat.MIMETYPE_VIDEO_AVC && Codec.phoneHasHevcEncoder()
-        if (converting && tidied && !job.force && !charging(ctx)) {
+        if (false) {   // 충전 대기 없음: 바로 변환
             // H.264는 변환 없이 올리지 않음: 충전기를 꽂을 때까지 기다림
             converting = false
             dedupUsed?.delete(); dedupUsed = null
@@ -376,29 +373,10 @@ object Tidy {
                     finish(ctx, job, out, true, "")
                     return
                 }
-                // 변환할 파일: 정리본으로 먼저 바꿔 두고, 변환은 차례가 오면 (앞 파일 업로드가 끝난 뒤)
-                rem.renameTo(out); dedupUsed = null
-                try { replace(ctx, job, out); markTidied(ctx, job.name); RecordService.addLog("정리 완료 → 변환·업로드 차례 기다림: ${job.name}") }
-                catch (e: Exception) { RecordService.addLog("정리본 저장 실패(원본 유지): ${job.name} ${e.message}"); markTidied(ctx, job.name) }
-                out.delete()
-                current = null; converting = false
-                synchronized(queue) { queue.add(job); sortQueue() }
-                persist(); onChange?.invoke()
-                h.post { next(ctx) }
-                return
+                // 변환할 파일은 이어서 바로 변환 (끝나면 곧바로 업로드)
             } else {
                 rem.delete()
                 RecordService.addLog("직접 다시 쓰기 실패 → 기존 방식으로 정리: ${job.name} ($err)")
-                if (converting) {
-                    // 변환은 차례가 오면 (그때 변환하면서 같이 정리됨)
-                    markTidied(ctx, job.name)
-                    dedupUsed?.let { d -> try { replace(ctx, job, d) } catch (_: Exception) {} ; d.delete() }; dedupUsed = null
-                    current = null; converting = false
-                    synchronized(queue) { queue.add(job); sortQueue() }
-                    persist(); onChange?.invoke()
-                    h.post { next(ctx) }
-                    return
-                }
             }
         }
         percent = 0
