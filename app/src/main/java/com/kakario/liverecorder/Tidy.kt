@@ -49,7 +49,13 @@ object Tidy {
 
     /** 파일 이름의 녹화 시각(yyyyMMdd HHmmss)으로 오래된 것부터 */
     fun timeKey(name: String): String = Regex("""(\d{8}) (\d{6})""").find(name)?.let { it.groupValues[1] + it.groupValues[2] } ?: "99999999999999"
-    private fun sortQueue() { val l = queue.sortedBy { timeKey(it.name) }; queue.clear(); queue.addAll(l) }
+    /** 100개 넘게 밀리면 짧은(작은) 파일부터 — 개수를 먼저 줄임. 아니면 오래된 것부터 */
+    const val MANY = 100
+    private fun sortQueue() {
+        val l = if (queue.size >= MANY) queue.sortedBy { j -> (j.path ?: pathFor(j.name))?.let { File(it).length() } ?: Long.MAX_VALUE }
+                else queue.sortedBy { timeKey(it.name) }
+        queue.clear(); queue.addAll(l)
+    }
     /** 현황용: 대기 중인 이름들(오래된 순), 충전 대기 수 */
     fun queuedNames(): List<String> = synchronized(queue) { queue.map { it.name } }
 
@@ -144,6 +150,25 @@ object Tidy {
     /** 파일 목록 표시용: 정리 중이면 "정리 중… 37%", 대기 중이면 "정리 대기" */
     @Volatile var converting = false; private set
     @Volatile var convStartAt = 0L; private set
+    @Volatile private var convBefore = 0L
+
+    /** 설정 '변환 기록 남기기': 파일마다 크기·걸린 시간·속도를 기록 */
+    fun convLogOn(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("convLog", false)
+    fun convLogFile(ctx: Context) = File(ctx.filesDir, "convert_log.txt")
+    private fun logConv(ctx: Context, job: Job, ok: Boolean, err: String) {
+        if (!convLogOn(ctx)) return
+        try {
+            val sec = ((System.currentTimeMillis() - convStartAt) / 1000).coerceAtLeast(1)
+            val after = (job.path ?: pathFor(job.name))?.let { File(it).length() } ?: 0L
+            val mb = convBefore / 1048576
+            val line = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.KOREA).format(java.util.Date()) +
+                " | " + (if (ok) "성공" else "실패($err)") + " | ${mb}MB → ${if (ok) after / 1048576 else 0}MB | ${sec / 60}분 ${sec % 60}초 | " +
+                String.format("%.0f", mb * 60.0 / sec) + "MB/분 | 대기 ${synchronized(queue) { queue.size }}개 | ${job.name}\n"
+            val f = convLogFile(ctx)
+            if (f.length() > 1_000_000) f.writeText(f.readText().takeLast(500_000))
+            f.appendText(line)
+        } catch (_: Exception) {}
+    }
     /** 앱이 직접 다시 쓰는 단계(시간 바로잡기) 중인지 */
     @Volatile private var remuxing = false
 
@@ -340,12 +365,6 @@ object Tidy {
         // H.264면 정리하면서 H.265로 변환 (충전 중일 때만, 하드웨어 인코더 있을 때만)
         val mime = Codec.probeUri(ctx, input)
         converting = autoH265(ctx) && mime == android.media.MediaFormat.MIMETYPE_VIDEO_AVC && Codec.phoneHasHevcEncoder()
-        // 밀려 있으면 변환은 건너뛰고 정리만 해서 바로 업로드 (폰 변환은 느려서, 밀리면 아무것도 못 올림)
-        val backlog = synchronized(queue) { queue.size }
-        if (converting && !job.force && backlog >= 2) {
-            converting = false
-            RecordService.addLog("대기 ${backlog}개 밀림 → 변환 건너뛰고 정리만 해서 바로 업로드: ${job.name}")
-        }
         if (false) {   // 충전 대기 없음: 바로 변환
             // H.264는 변환 없이 올리지 않음: 충전기를 꽂을 때까지 기다림
             converting = false
@@ -430,6 +449,7 @@ object Tidy {
         }
         var lastP = -1; var lastMove = System.currentTimeMillis()
         convStartAt = System.currentTimeMillis()
+        convBefore = srcFile?.length() ?: (job.path?.let { File(it).length() } ?: 0L)
         val poll = object : Runnable {
             override fun run() {
                 if (current !== job) return
@@ -478,11 +498,18 @@ object Tidy {
         RecordService.addLog(msg)
         val wasConverting = converting
         transformer = null; curOut = null
+        if (wasConverting) logConv(ctx, job, ok && out.length() > 0, err)
         if (wasConverting && !ok) {
-            // 변환 실패: 다시 붙잡고 있지 않고 그대로(H.264) 바로 업로드 — 쌓이지 않게
+            // 변환 실패: 한 번은 줄 맨 뒤로 보내 다시, 두 번째도 실패하면 그대로(H.264) 업로드 — 붙잡고 있지 않게
             markTidied(ctx, job.name)
-            RecordService.addLog("변환 실패 → 그대로 업로드: ${job.name}")
-            Uploader.enqueue(ctx, job.name, job.path ?: pathFor(job.name), job.streamer, allowH264 = true)
+            job.fails++
+            if (job.fails < 2) {
+                synchronized(queue) { queue.addLast(job) }
+                RecordService.addLog("변환 실패(1번째) → 줄 뒤로, 나중에 한 번 더: ${job.name}")
+            } else {
+                RecordService.addLog("변환 2번 실패 → 그대로 업로드: ${job.name}")
+                Uploader.enqueue(ctx, job.name, job.path ?: pathFor(job.name), job.streamer, allowH264 = true)
+            }
         } else {
             // 정리·변환이 끝난 파일 → FTP 자동 업로드
             Uploader.enqueue(ctx, job.name, job.path ?: pathFor(job.name), job.streamer)

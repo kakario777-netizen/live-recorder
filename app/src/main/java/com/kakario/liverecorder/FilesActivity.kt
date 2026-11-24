@@ -145,7 +145,7 @@ class FilesActivity : Activity() {
             if (tc != null && Tidy.converting) append("\n▶ 변환 중 ${Tidy.percent}% · ${(System.currentTimeMillis() - Tidy.convStartAt) / 60000}분째 · ${tc.name}")
             else if (tc != null) append("\n▶ 업로드 준비 중 · ${tc.name}")
             val wait = Tidy.queuedNames().size
-            if (wait > 0) append("\n   다음 차례 ${wait}개 (오래된 것부터)")
+            if (wait > 0) append("\n   변환 대기 ${wait}개 (" + (if (wait >= Tidy.MANY) "${Tidy.MANY}개 넘게 밀려서 짧은 영상부터" else "오래된 것부터") + ")")
             if (FtpConfig.ready(this@FilesActivity)) {
                 val uc = Uploader.current
                 if (uc != null) append("\n▶ 업로드 중 ${Uploader.percent}% · ${String.format("%.1f", Uploader.speed / 1048576.0)}MB/s · ${uc.name}")

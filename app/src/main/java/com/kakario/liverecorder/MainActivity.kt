@@ -817,6 +817,22 @@ class MainActivity : Activity() {
             prefs.edit().putBoolean(CloudBm.chatKey(ctx), v).apply(); CloudBm.settingsChanged(ctx)
         }
 
+        line()
+        toggle("변환 기록 남기기", "파일마다 크기·걸린 시간·속도를 기록 (아래에서 보기·복사)", prefs.getBoolean("convLog", false)) { v ->
+            prefs.edit().putBoolean("convLog", v).apply()
+        }
+        line()
+        row("변환 기록 보기", "기록 남기기를 켠 뒤 변환된 파일들") {
+            val t = try { Tidy.convLogFile(ctx).readText() } catch (e: Exception) { "" }
+            val body = t.lines().filter { it.isNotBlank() }.takeLast(200).reversed().joinToString("\n").ifEmpty { "아직 기록이 없어요" }
+            AlertDialog.Builder(ctx).setTitle("변환 기록 (최근 것부터)")
+                .setMessage(body)
+                .setPositiveButton("복사") { _, _ ->
+                    (getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("변환 기록", body))
+                    Toast.makeText(ctx, "복사했어요", Toast.LENGTH_SHORT).show()
+                }.setNegativeButton("닫기", null).show()
+        }
+
         section("폰 연결")
         row("폰 역할 · 즐겨찾기 맞추기", "지금: $role") { showCloudBm() }
         line()
