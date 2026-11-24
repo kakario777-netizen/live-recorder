@@ -71,7 +71,9 @@ class Updater(private val a: Activity) {
                 o.optJSONArray("assets")?.let { arr ->
                     for (i in 0 until arr.length()) {
                         val x = arr.getJSONObject(i)
-                        if (x.optString("name").endsWith(".apk")) { url = x.optString("browser_download_url"); size = x.optLong("size") }
+                        val u = x.optString("browser_download_url")
+                        // 내 저장소 릴리스의 https 파일만
+                        if (x.optString("name").endsWith(".apk") && u.startsWith("https://github.com/kakario777-netizen/live-recorder/releases/download/")) { url = u; size = x.optLong("size") }
                     }
                 }
                 rel = Release(build, o.optString("body"), url, size)
@@ -102,7 +104,10 @@ class Updater(private val a: Activity) {
                     c.inputStream.use { ins -> FileOutputStream(f).use { ins.copyTo(it, 128 * 1024) } }
                     c.disconnect()
                 }
-                f.length() > 0
+                // 받은 파일이 정말 이 앱의 새 버전인지 확인 (이름·버전이 다르면 버림)
+                val info = a.packageManager.getPackageArchiveInfo(f.absolutePath, 0)
+                (f.length() > 0 && info != null && info.packageName == a.packageName && info.longVersionCode.toInt() == r.build && r.build > myBuild())
+                    .also { if (!it) f.delete() }
             } catch (e: Exception) { false }
             main.post {
                 if (!ok || a.isFinishing) return@post
