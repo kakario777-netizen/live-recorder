@@ -85,6 +85,8 @@ object Uploader {
     private val queue = ArrayList<Job>()
     @Volatile var current: Job? = null; private set
     @Volatile var percent = 0; private set
+    /** 지금 업로드 속도 (바이트/초) */
+    @Volatile var speed = 0L; private set
     @Volatile var lastResult = ""; private set
     var onChange: (() -> Unit)? = null
     var onIdle: (() -> Unit)? = null
@@ -359,7 +361,7 @@ object Uploader {
                         ?: throw Exception("서버가 업로드를 받지 않아요 (${f.replyString.trim()})")
                     var done = offset
                     val buf = ByteArray(256 * 1024)
-                    var last = 0L
+                    var last = 0L; var lastDone = done
                     os.use { o ->
                         while (true) {
                             val n = inp.read(buf)
@@ -367,7 +369,7 @@ object Uploader {
                             o.write(buf, 0, n)
                             done += n
                             val now = System.currentTimeMillis()
-                            if (now - last > 1000) { last = now; percent = (done * 100 / total).toInt(); onChange?.invoke() }
+                            if (now - last > 1000) { if (last > 0) speed = (done - lastDone) * 1000 / (now - last); lastDone = done; last = now; percent = (done * 100 / total).toInt(); onChange?.invoke() }
                         }
                     }
                     if (!f.completePendingCommand()) throw Exception("업로드 마무리 실패 (${f.replyString.trim()})")

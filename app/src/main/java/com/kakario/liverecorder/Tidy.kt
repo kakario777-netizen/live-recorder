@@ -101,7 +101,7 @@ object Tidy {
     }
 
     private fun onPowerConnected(ctx: Context) {
-        if (!autoH265(ctx)) {
+        if (true) {   // 예전에 변환 실패로 보관만 하던 파일도 그대로 업로드
             val fl = synchronized(queue) { val l = failed.toList(); failed.clear(); l }
             fl.forEach { Uploader.enqueue(ctx, it.name, it.path ?: pathFor(it.name), it.streamer, allowH264 = true) }
         }
@@ -143,6 +143,7 @@ object Tidy {
 
     /** 파일 목록 표시용: 정리 중이면 "정리 중… 37%", 대기 중이면 "정리 대기" */
     @Volatile var converting = false; private set
+    @Volatile var convStartAt = 0L; private set
     /** 앱이 직접 다시 쓰는 단계(시간 바로잡기) 중인지 */
     @Volatile private var remuxing = false
 
@@ -339,6 +340,12 @@ object Tidy {
         // H.264면 정리하면서 H.265로 변환 (충전 중일 때만, 하드웨어 인코더 있을 때만)
         val mime = Codec.probeUri(ctx, input)
         converting = autoH265(ctx) && mime == android.media.MediaFormat.MIMETYPE_VIDEO_AVC && Codec.phoneHasHevcEncoder()
+        // 밀려 있으면 변환은 건너뛰고 정리만 해서 바로 업로드 (폰 변환은 느려서, 밀리면 아무것도 못 올림)
+        val backlog = synchronized(queue) { queue.size }
+        if (converting && !job.force && backlog >= 2) {
+            converting = false
+            RecordService.addLog("대기 ${backlog}개 밀림 → 변환 건너뛰고 정리만 해서 바로 업로드: ${job.name}")
+        }
         if (false) {   // 충전 대기 없음: 바로 변환
             // H.264는 변환 없이 올리지 않음: 충전기를 꽂을 때까지 기다림
             converting = false
@@ -421,12 +428,22 @@ object Tidy {
         } catch (e: Exception) {
             finish(ctx, job, out, false, e.message ?: "시작 실패"); return
         }
+        var lastP = -1; var lastMove = System.currentTimeMillis()
+        convStartAt = System.currentTimeMillis()
         val poll = object : Runnable {
             override fun run() {
                 if (current !== job) return
                 if (t.getProgress(holder) == Transformer.PROGRESS_STATE_AVAILABLE) {
                     percent = holder.progress
                     onChange?.invoke()
+                }
+                if (percent != lastP) { lastP = percent; lastMove = System.currentTimeMillis() }
+                else if (System.currentTimeMillis() - lastMove > 5 * 60_000L) {
+                    // 5분 동안 진행이 없으면 멈춘 것 → 변환 포기하고 그대로 업로드
+                    RecordService.addLog("변환이 5분째 멈춤(${percent}%) → 변환 포기, 그대로 업로드: ${job.name}")
+                    try { t.cancel() } catch (_: Exception) {}
+                    finish(ctx, job, out, false, "멈춤")
+                    return
                 }
                 h.postDelayed(this, 1000)
             }
@@ -462,16 +479,10 @@ object Tidy {
         val wasConverting = converting
         transformer = null; curOut = null
         if (wasConverting && !ok) {
-            // 변환 실패: H.264는 올리지 않음. 1번 실패면 한 번 더, 2번 실패면 멈추고 보관
-            job.fails++
-            job.force = false
-            if (job.fails >= 2) {
-                synchronized(queue) { failed.add(job) }
-                RecordService.addLog("H.265 변환 2번 실패 → 자동 시도 멈춤, H.264 그대로 보관 (파일 목록에서 '다시 시도' 또는 '그대로 업로드'): ${job.name}")
-            } else {
-                synchronized(queue) { waitCharge.add(job) }
-                RecordService.addLog("H.265 변환 실패(1번째) → 다음 확인 때 한 번 더 시도: ${job.name}")
-            }
+            // 변환 실패: 다시 붙잡고 있지 않고 그대로(H.264) 바로 업로드 — 쌓이지 않게
+            markTidied(ctx, job.name)
+            RecordService.addLog("변환 실패 → 그대로 업로드: ${job.name}")
+            Uploader.enqueue(ctx, job.name, job.path ?: pathFor(job.name), job.streamer, allowH264 = true)
         } else {
             // 정리·변환이 끝난 파일 → FTP 자동 업로드
             Uploader.enqueue(ctx, job.name, job.path ?: pathFor(job.name), job.streamer)

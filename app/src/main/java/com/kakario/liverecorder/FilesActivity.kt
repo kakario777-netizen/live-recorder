@@ -140,12 +140,19 @@ class FilesActivity : Activity() {
         head.text = buildString {
             append("내 파일 > ${Saver.FOLDER} · ${items.size}개")
             if (!Codec.phoneHasHevcEncoder()) append("\n이 폰에는 H.265 인코더가 없어 변환할 수 없어요")
-            Tidy.current?.let { append("\n정리 중: ${it.name} ${Tidy.percent}%") }
+            // 지금 하는 일: 변환 → 업로드 (정리는 금방 끝나서 따로 안 보여 줌)
+            val tc = Tidy.current
+            if (tc != null && Tidy.converting) append("\n▶ 변환 중 ${Tidy.percent}% · ${(System.currentTimeMillis() - Tidy.convStartAt) / 60000}분째 · ${tc.name}")
+            else if (tc != null) append("\n▶ 업로드 준비 중 · ${tc.name}")
+            val wait = Tidy.queuedNames().size
+            if (wait > 0) append("\n   다음 차례 ${wait}개 (오래된 것부터)")
             if (FtpConfig.ready(this@FilesActivity)) {
-                append("\nNAS 자동 업로드 켜짐 · 대기 ${Uploader.pendingCount(this@FilesActivity)}개")
-                Uploader.current?.let { append(" · 업로드 중: ${it.name} ${Uploader.percent}%") }
+                val uc = Uploader.current
+                if (uc != null) append("\n▶ 업로드 중 ${Uploader.percent}% · ${String.format("%.1f", Uploader.speed / 1048576.0)}MB/s · ${uc.name}")
+                else append("\n▶ 업로드: 지금 올리는 것 없음")
+                append("\n   업로드 대기 ${Uploader.pendingCount(this@FilesActivity) - (if (uc != null) 1 else 0)}개")
                 if (Uploader.lastResult.isNotBlank()) append("\n최근: ${Uploader.lastResult}")
-            } else append("\nNAS 자동 업로드 꺼짐")
+            } else append("\nNAS 자동 업로드 꺼짐 (NAS 설정을 먼저 해 주세요)")
             append(" · 휴지통 ${Uploader.trashFiles().size}개 (${Uploader.trashLabel(this@FilesActivity)} 뒤 자동 삭제)")
             if (cur != null) append("\n변환 중: ${cur.name} ${ConvertService.percent}%")
             else if (ConvertService.lastResult.isNotBlank()) append("\n최근: ${ConvertService.lastResult}")
