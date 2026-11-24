@@ -80,7 +80,15 @@ class RemoteStatusActivity : Activity() {
         bottom.addView(Button(this).apply {
             text = "지금 보는 방송 녹화 (녹화폰에서)"; isAllCaps = false
             setOnClickListener { setResult(RESULT_OK, Intent().putExtra("action", "add")); finish() }
-        }, LinearLayout.LayoutParams(-1, -2))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        bottom.addView(Button(this).apply {
+            text = "휴지통 비우기"; isAllCaps = false
+            setOnClickListener {
+                android.app.AlertDialog.Builder(this@RemoteStatusActivity).setMessage("녹화폰 휴지통(업로드 끝난 원본)을 전부 지울까요? 되살릴 수 없어요.")
+                    .setPositiveButton("전부 지우기") { _, _ -> CloudBm.sendCommand(this@RemoteStatusActivity, "trash", ""); android.widget.Toast.makeText(this@RemoteStatusActivity, "녹화폰에 보냈어요", android.widget.Toast.LENGTH_SHORT).show() }
+                    .setNegativeButton("취소", null).show()
+            }
+        }, LinearLayout.LayoutParams(-2, -2))
         root.addView(bottom)
         setContentView(root)
     }

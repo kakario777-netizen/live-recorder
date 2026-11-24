@@ -422,5 +422,12 @@ object Uploader {
         trashDir().listFiles()?.forEach { if (it.name != ".nomedia" && it.lastModified() < limit) it.delete() }
     }
 
+    /** 휴지통 전부 지우기 → (개수, MB) */
+    fun emptyTrash(): Pair<Int, Long> {
+        var n = 0; var b = 0L
+        trashFiles().forEach { val l = it.length(); if (it.delete()) { n++; b += l } }
+        RecordService.addLog("휴지통 비움: ${n}개 · ${b / 1024 / 1024}MB")
+        return n to b / 1024 / 1024
+    }
     fun trashFiles(): List<File> = trashDir().listFiles()?.filter { it.name != ".nomedia" }?.sortedByDescending { it.lastModified() } ?: emptyList()
 }

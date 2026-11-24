@@ -543,7 +543,7 @@ class FilesActivity : Activity() {
             "${it.name}\n${it.length() / 1024 / 1024}MB · ${fmt.format(Date(it.lastModified()))} 업로드 · ${left}일 뒤 삭제"
         }.toTypedArray()
         AlertDialog.Builder(this)
-            .setTitle("휴지통 (NAS 업로드 확인 끝난 원본)")
+            .setTitle("휴지통 ${files.size}개 · ${files.sumOf { it.length() } / 1024 / 1024}MB")
             .setItems(names) { _, i ->
                 val f = files[i]
                 AlertDialog.Builder(this).setMessage(f.name)
@@ -553,6 +553,11 @@ class FilesActivity : Activity() {
                     }
                     .setNeutralButton("지금 삭제") { _, _ -> f.delete(); Toast.makeText(this, "삭제했어요", Toast.LENGTH_SHORT).show() }
                     .setNegativeButton("닫기", null).show()
+            }
+            .setNeutralButton("전부 비우기") { _, _ ->
+                AlertDialog.Builder(this).setMessage("휴지통 ${files.size}개를 전부 지울까요? 되살릴 수 없어요.")
+                    .setPositiveButton("전부 지우기") { _, _ -> val (n, mb) = Uploader.emptyTrash(); Toast.makeText(this, "${n}개 · ${mb}MB 지웠어요", Toast.LENGTH_SHORT).show(); reload() }
+                    .setNegativeButton("취소", null).show()
             }
             .setNegativeButton("닫기", null)
             .show()
