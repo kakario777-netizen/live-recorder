@@ -153,17 +153,24 @@ object Tidy {
     @Volatile private var convBefore = 0L
 
     /** 설정 '변환 기록 남기기': 파일마다 크기·걸린 시간·속도를 기록 */
-    fun convLogOn(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("convLog", false)
+    fun convLogOn(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("convLog", true)
+    @Volatile private var jobStartAt = 0L
+    @Volatile private var encName = ""
+    @Volatile private var screenOffSec = 0L
     fun convLogFile(ctx: Context) = File(ctx.filesDir, "convert_log.txt")
     private fun logConv(ctx: Context, job: Job, ok: Boolean, err: String) {
         if (!convLogOn(ctx)) return
         try {
-            val sec = ((System.currentTimeMillis() - convStartAt) / 1000).coerceAtLeast(1)
+            val now = System.currentTimeMillis()
+            val sec = ((now - convStartAt) / 1000).coerceAtLeast(1)
+            val tidySec = ((convStartAt - jobStartAt) / 1000).coerceAtLeast(0)
+            val temp = try { ctx.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, 0)?.div(10) ?: 0 } catch (_: Exception) { 0 }
+            val extra = " | 정리 ${tidySec / 60}분${tidySec % 60}초 · 변환 ${sec / 60}분${sec % 60}초 (그중 화면 꺼짐 ${screenOffSec / 60}분) · 인코더 ${encName.ifEmpty { "?" }} · 동시 녹화 ${RecordService.list().size}개 · 배터리 ${temp}°C"
             val after = (job.path ?: pathFor(job.name))?.let { File(it).length() } ?: 0L
             val mb = convBefore / 1048576
             val line = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.KOREA).format(java.util.Date()) +
                 " | " + (if (ok) "성공" else "실패($err)") + " | ${mb}MB → ${if (ok) after / 1048576 else 0}MB | ${sec / 60}분 ${sec % 60}초 | " +
-                String.format("%.0f", mb * 60.0 / sec) + "MB/분 | 대기 ${synchronized(queue) { queue.size }}개 | ${job.name}\n"
+                String.format("%.0f", mb * 60.0 / sec) + "MB/분 | 대기 ${synchronized(queue) { queue.size }}개$extra | ${job.name}\n"
             val f = convLogFile(ctx)
             if (f.length() > 1_000_000) f.writeText(f.readText().takeLast(500_000))
             f.appendText(line)
@@ -359,6 +366,7 @@ object Tidy {
             return
         }
         sp.edit().putInt("starts:" + job.name, starts).apply()
+        jobStartAt = System.currentTimeMillis(); encName = ""; screenOffSec = 0L
         current = job
         percent = 0
         onChange?.invoke()
@@ -453,9 +461,11 @@ object Tidy {
         val t = tb
             .addListener(object : Transformer.Listener {
                 override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                    encName = exportResult.videoEncoderName ?: ""
                     finish(ctx, job, out, true, "")
                 }
                 override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
+                    encName = exportResult.videoEncoderName ?: ""
                     finish(ctx, job, out, false, exportException.errorCodeName)
                 }
             })
@@ -478,6 +488,7 @@ object Tidy {
                     onChange?.invoke()
                 }
                 val now = System.currentTimeMillis()
+                if (!pm.isInteractive) screenOffSec += 1
                 if (percent != lastP) { lastP = percent; lastMove = now; offStall = 0L }
                 else if (!pm.isInteractive) {
                     // 화면 꺼진 동안 멈춘 건 포기하지 않음 (켜지면 이어서). 3분 넘게 멈추면 이 폰 문제로 보고 안내

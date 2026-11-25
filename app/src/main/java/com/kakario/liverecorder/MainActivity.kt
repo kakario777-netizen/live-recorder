@@ -843,7 +843,7 @@ class MainActivity : Activity() {
         }
 
         line()
-        toggle("변환 기록 남기기", "파일마다 크기·걸린 시간·속도를 기록 (아래에서 보기·복사)", prefs.getBoolean("convLog", false)) { v ->
+        toggle("변환 기록 남기기", "파일마다 크기·걸린 시간·속도를 기록 (아래에서 보기·복사)", prefs.getBoolean("convLog", true)) { v ->
             prefs.edit().putBoolean("convLog", v).apply()
         }
         line()
