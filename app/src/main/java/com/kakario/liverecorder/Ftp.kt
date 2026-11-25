@@ -80,7 +80,7 @@ object FtpConfig {
  * - 대기 목록은 저장해 둬서 앱이 꺼졌다 켜져도 이어서 처리
  */
 object Uploader {
-    class Job(val name: String, var path: String, val streamer: String, var tries: Int = 0, var nextAt: Long = 0, var lastError: String = "")
+    class Job(val name: String, var path: String, val streamer: String, var tries: Int = 0, var nextAt: Long = 0, var lastError: String = "", var folder: String = "")
 
     private val queue = ArrayList<Job>()
     @Volatile var current: Job? = null; private set
@@ -176,46 +176,62 @@ object Uploader {
     /** NAS 폴더: 스트리머 폴더, 티켓방 흐린 영상은 그 안 '티켓방' 폴더 */
     const val TICKET_DIR = "티켓방"
     fun isTicket(name: String) = name.contains("(티켓방 흐림)") || name.contains("blurred", true)
-    fun folderFor(job: Job): String {
+    const val SUB_DIR = "자막"
+    /** 티켓방 흐린 영상 → 스트리머/티켓방, 채팅 자막(.ass)이 같이 있는 영상 → 스트리머/자막, 나머지 → 스트리머 */
+    fun folderFor(job: Job, hasSub: Boolean = false): String {
+        if (job.folder.isNotEmpty()) return job.folder
         val s = Names.clean(job.streamer).ifEmpty { Names.streamerFromFileName(job.name) }.ifEmpty { "기타" }
-        return if (isTicket(job.name)) "$s/$TICKET_DIR" else s
+        return when { isTicket(job.name) -> "$s/$TICKET_DIR"; hasSub -> "$s/$SUB_DIR"; else -> s }
     }
 
-    /** 업데이트 후 딱 한 번(1번 녹화폰만): 이미 올라간 티켓방 흐린 영상을 각 스트리머 폴더의 '티켓방' 폴더로 옮김 */
-    @Volatile private var ticketMoveRunning = false
-    private fun ticketMoveOnce(app: Context) {
+    /** 업데이트 후 딱 한 번(1번 녹화폰만) NAS 정리:
+     *  - 티켓방 흐린 영상 → 스트리머/티켓방
+     *  - 채팅 자막(.ass)이 있는 영상 + 자막 → 스트리머/자막
+     *  - 메모장 채팅 기록(.chat.txt) → 지움 */
+    @Volatile private var reorgRunning = false
+    private fun nasReorgOnce(app: Context) {
         val p = app.getSharedPreferences("main", Context.MODE_PRIVATE)
-        if (p.getBoolean("ticketMoveDone", false) || ticketMoveRunning || !CloudBm.primary(app)) return
-        ticketMoveRunning = true
+        if (p.getBoolean("nasReorg2Done", false) || reorgRunning || !CloudBm.primary(app)) return
+        reorgRunning = true
         Thread({
-            var moved = 0; var failed = 0
+            var tk = 0; var sub = 0; var del = 0; var failed = 0
             try {
                 val f = connect(app)
                 try {
                     val base = FtpConfig.folder(app).trimEnd('/')
                     val dirs = (f.listDirectories(base.ifEmpty { "/" }) ?: emptyArray()).map { it.name.substringAfterLast('/') }
                         .filter { it.isNotEmpty() && it != "." && it != ".." && !it.startsWith("#") && !it.startsWith("@") }
+                    fun move(from: String, toDir: String, n: String): Boolean { mkdirs(f, toDir); return f.rename("$from/$n", "$toDir/$n") }
                     for (d in dirs) {
                         val dir = "$base/$d"
-                        val files = (f.listFiles(dir) ?: emptyArray()).filter { it.isFile && isTicket(it.name) && !it.name.endsWith(".part") }
-                        if (files.isEmpty()) continue
-                        val to = "$dir/$TICKET_DIR"
-                        mkdirs(f, to)
-                        for (x in files) {
-                            val n = x.name.substringAfterLast('/')
-                            if (f.rename("$dir/$n", "$to/$n")) moved++ else failed++
+                        val names = (f.listFiles(dir) ?: emptyArray()).filter { it.isFile }.map { it.name.substringAfterLast('/') }
+                        // 하위 폴더(티켓방·자막)에 이미 있는 메모장도 지움
+                        for (sd in listOf(TICKET_DIR, SUB_DIR)) (f.listFiles("$dir/$sd") ?: emptyArray()).filter { it.isFile && it.name.endsWith(".chat.txt") }
+                            .forEach { if (f.deleteFile("$dir/$sd/${it.name.substringAfterLast('/')}")) del++ else failed++ }
+                        val set = names.toHashSet()
+                        for (n in names) {
+                            if (n.endsWith(".part")) continue
+                            when {
+                                n.endsWith(".chat.txt") -> if (f.deleteFile("$dir/$n")) del++ else failed++
+                                n.endsWith(".ass") -> {}
+                                isTicket(n) -> if (move(dir, "$dir/$TICKET_DIR", n)) tk++ else failed++
+                                (n.substringBeforeLast('.') + ".ass") in set -> {
+                                    val a = n.substringBeforeLast('.') + ".ass"
+                                    if (move(dir, "$dir/$SUB_DIR", n) && move(dir, "$dir/$SUB_DIR", a)) sub++ else failed++
+                                }
+                            }
                         }
                     }
                 } finally {
                     try { f.logout() } catch (_: Exception) {}
                     try { f.disconnect() } catch (_: Exception) {}
                 }
-                if (failed == 0) p.edit().putBoolean("ticketMoveDone", true).apply()
-                RecordService.addLog("NAS 정리: 티켓방 흐린 영상 ${moved}개를 각 스트리머의 '티켓방' 폴더로 옮김" + (if (failed > 0) " (실패 ${failed}개, 다음에 다시)" else ""))
+                if (failed == 0) p.edit().putBoolean("nasReorg2Done", true).apply()
+                RecordService.addLog("NAS 정리: 티켓방 영상 ${tk}개 · 자막 있는 영상 ${sub}개 옮김, 메모장 ${del}개 지움" + (if (failed > 0) " (실패 ${failed}개, 다음에 다시)" else ""))
             } catch (e: Exception) {
-                RecordService.addLog("NAS 티켓방 정리 못 함(다음에 다시): ${e.message}")
-            } finally { ticketMoveRunning = false }
-        }, "ftp-ticket-move").start()
+                RecordService.addLog("NAS 정리 못 함(다음에 다시): ${e.message}")
+            } finally { reorgRunning = false }
+        }, "ftp-nas-reorg").start()
     }
 
     fun kick(ctx: Context) {
@@ -223,7 +239,7 @@ object Uploader {
         appCtx = app
         load(app)
         if (!FtpConfig.ready(app)) return
-        ticketMoveOnce(app)
+        nasReorgOnce(app)
         synchronized(this) {
             if (worker?.isAlive == true) return
             worker = Thread({ loop(app) }, "ftp-upload").also { it.start() }
@@ -406,7 +422,7 @@ object Uploader {
             ?: run { job.tries = 99; addMissing(ctx, job.name); throw Exception("파일이 없어요 → 우선 넘어감 (다 끝나면 '다시 정리'로 다시 찾음)") }
         val total = src.length()
         // 스트리머 정보가 빠진 채 들어온 파일(직접 정리·직접 변환 등)은 파일 이름에서 꺼냄
-        val folderName = folderFor(job)
+        val folderName = folderFor(job, companions(src).isNotEmpty()).also { job.folder = it }
         val dir = FtpConfig.folder(ctx).trimEnd('/') + "/" + folderName
         val finalPath = "$dir/${job.name}"
         val partPath = "$finalPath.part"
@@ -447,7 +463,7 @@ object Uploader {
             val fin = remoteSize(f, finalPath)
             if (fin != total) throw Exception("최종 확인 실패 (서버 $fin / 원본 $total)")
             percent = 100
-            // 채팅 파일(.ass 자막, .chat.txt 기록)도 같은 폴더에 올리고 크기 확인
+            // 채팅 자막(.ass)도 같은 폴더에 올리고 크기 확인 (메모장 기록은 올리지 않음)
             companions(src).forEach { cf ->
                 val rp = "$dir/${cf.name}"
                 if (remoteSize(f, rp) != cf.length()) {
@@ -477,7 +493,8 @@ object Uploader {
     /** 영상과 같이 다니는 채팅 파일 */
     fun companions(video: File): List<File> {
         val base = video.absolutePath.substringBeforeLast('.')
-        return listOf(File("$base.ass"), File("$base.chat.txt")).filter { it.exists() }
+        File("$base.chat.txt").takeIf { it.exists() }?.delete()   // 메모장 기록은 따로 남기지 않음 (.ass 자막에 같은 채팅이 다 들어 있음)
+        return listOf(File("$base.ass")).filter { it.exists() && it.length() > 0 }
     }
 
     /** 휴지통 보관 시간 (설정, 기본 하루) */
