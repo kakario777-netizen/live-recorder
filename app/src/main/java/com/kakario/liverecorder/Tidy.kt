@@ -320,10 +320,12 @@ object Tidy {
         }
         if (job == null) {
             current = null
+            Awake.hold(ctx, "tidy", false)
             onChange?.invoke()
             if (!waitUpload) onIdle?.invoke()
             return
         }
+        Awake.hold(ctx, "tidy", true)
         val tidied = isTidied(ctx, job.name)
         if (tidied && !job.force && !autoH265(ctx)) {
             // 이미 정리된 파일인데 변환은 꺼짐 → 바로 업로드로

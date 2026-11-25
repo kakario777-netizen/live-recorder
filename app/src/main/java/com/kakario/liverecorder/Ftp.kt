@@ -240,10 +240,12 @@ object Uploader {
             if (job == null) {
                 val waiting = synchronized(queue) { queue.isNotEmpty() }
                 Tidy.kick(ctx)   // 올릴 게 없으면 다음 파일 변환 시작
+                Awake.hold(ctx, "upload", false)
                 if (!waiting) { onIdle?.invoke(); return }
                 Thread.sleep(5000); continue
             }
             current = job; percent = 0; onChange?.invoke()
+            Awake.hold(ctx, "upload", true)
             Tidy.kick(ctx)   // 이걸 올리는 동안 다음 파일 변환 (업로드가 쉬지 않게)
             val ok = try { upload(ctx, job); true } catch (e: Exception) {
                 job.lastError = e.message ?: e.javaClass.simpleName; false

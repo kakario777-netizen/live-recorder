@@ -279,6 +279,7 @@ class RecordService : Service() {
         val n = notification("녹화 담당 폰 · 원격 명령 대기 중", true)
         if (Build.VERSION.SDK_INT >= 34) startForeground(NID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         else startForeground(NID, n)
+        Tidy.kick(this)   // 남은 정리·변환이 있으면 이어서
         startSyncLoop()
     }
 
@@ -286,7 +287,8 @@ class RecordService : Service() {
         val n = notification("준비 중…", true)
         if (Build.VERSION.SDK_INT >= 34) startForeground(NID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         else startForeground(NID, n)
-        if (wake == null) {
+        if (wake?.isHeld != true) {   // 24시간 지나 풀렸으면 다시
+            try { wake?.release() } catch (_: Exception) {}
             wake = getSystemService(PowerManager::class.java)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "liverec:rec").apply { acquire(24 * 3600 * 1000L) }
             @Suppress("DEPRECATION")
