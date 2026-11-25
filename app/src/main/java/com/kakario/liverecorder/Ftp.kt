@@ -331,10 +331,11 @@ object Uploader {
                 RecordService.addLog("$lastResult (원본은 휴지통으로, ${trashLabel(ctx)} 뒤 삭제)")
             } else {
                 job.tries++
-                val waitMin = when (job.tries) { 1 -> 1; 2 -> 5; 3 -> 15; else -> 30 }
-                job.nextAt = System.currentTimeMillis() + waitMin * 60_000L
+                // 다시 시도는 짧게 (그동안 다른 파일은 계속 올림): 30초 → 1분 → 이후 2분
+                val waitSec = when (job.tries) { 1 -> 30; 2 -> 60; else -> 120 }
+                job.nextAt = System.currentTimeMillis() + waitSec * 1000L
                 lastResult = if (job.tries >= 99) "업로드 건너뜀: ${job.name} — ${job.lastError}" else "업로드 실패(${job.tries}번째): ${job.name} — ${job.lastError}"
-                RecordService.addLog(if (job.tries >= 99) lastResult else "$lastResult → ${waitMin}분 뒤 다시")
+                RecordService.addLog(if (job.tries >= 99) lastResult else "$lastResult → ${waitSec}초 뒤 다시")
                 if (job.tries < 99 && File(job.path).exists()) synchronized(queue) { queue.add(job) }
             }
             persist(ctx)

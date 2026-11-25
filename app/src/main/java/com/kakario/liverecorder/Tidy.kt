@@ -284,6 +284,7 @@ object Tidy {
 
     fun statusOf(name: String): String? = when {
         current?.name == name -> (if (converting && !remuxing) "H.265 변환 중… " else "정리 중… ") + "$percent%"
+        quickCurrent == name -> "정리 중… $quickPercent%"
         synchronized(queue) { failed.any { it.name == name } } -> "변환 실패 (H.264 보관)"
         synchronized(queue) { waitCharge.any { it.name == name } } -> "충전 대기 (H.265 변환)"
         synchronized(queue) { queue.any { it.name == name } } -> appCtx?.let { if (isTidied(it, name)) "변환 대기 (차례대로)" else null } ?: "정리 대기"
@@ -317,11 +318,12 @@ object Tidy {
         val app = ctx.applicationContext
         if (appCtx == null) appCtx = app
         synchronized(queue) {
-            if (current?.name == job.name || queue.any { it.name == job.name } || waitCharge.any { it.name == job.name }) return
+            if (current?.name == job.name || quickCurrent == job.name || queue.any { it.name == job.name } || waitCharge.any { it.name == job.name }) return
             if (failed.any { it.name == job.name } && !job.force) return   // 변환 실패 파일은 자동으로 다시 넣지 않음
             queue.add(job)
             sortQueue()
         }
+        if (converting) quickKick(app)
         persist()
         ensureThread()
         RecordService.addLog("정리 대기: ${job.name}")
@@ -432,14 +434,17 @@ object Tidy {
         val rem = File(workDir, "remux_" + job.name).also { it.delete() }
         if (srcFile != null && !tidied) {
             remuxing = true
-            val err = Remux.run(srcFile, rem) { p -> percent = p; onChange?.invoke() }
+            var vBytes = 0L; var vUs = 0L
+            val err = synchronized(remuxLock) {
+                Remux.run(srcFile, rem) { p -> percent = p; onChange?.invoke() }.also { vBytes = Remux.lastVideoBytes; vUs = Remux.lastVideoUs }
+            }
             remuxing = false
             if (err == null && rem.length() > 0) {
                 dedupUsed?.delete()
                 dedupUsed = rem          // 변환이 실패해도 이 정리본으로 원본을 바꿔 둠
                 srcFile = rem
                 input = Uri.fromFile(rem)
-                if (Remux.lastVideoUs > 5_000_000) videoBps = Remux.lastVideoBytes * 8 * 1_000_000 / Remux.lastVideoUs
+                if (vUs > 5_000_000) videoBps = vBytes * 8 * 1_000_000 / vUs
                 if (!converting) {
                     // 변환이 필요 없으면 이걸로 정리 끝
                     rem.renameTo(out)
@@ -455,25 +460,138 @@ object Tidy {
         }
         percent = 0
         onChange?.invoke()
+        val bitrate: Int? = if (!converting) null else if (videoBps > 0) {
+            // 실제 영상 비트레이트의 55% (흐린 화면처럼 아주 낮으면 그만큼 낮게 → 원본보다 커지지 않게)
+            (videoBps * 55 / 100).coerceIn(30_000, 8_000_000).toInt()
+        } else try {
+            val src = srcFile?.length() ?: 0L
+            val r = android.media.MediaMetadataRetriever()
+            try {
+                r.setDataSource(ctx, input)
+                val ms = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
+                if (ms > 5000 && src > 0) {
+                    val srcV = (src * 8 * 1000 / ms - 160_000).coerceAtLeast(150_000)
+                    (srcV * 55 / 100).coerceIn(150_000, minOf(srcV, 8_000_000)).toInt()
+                } else null
+            } finally { r.release() }
+        } catch (e: Exception) { null }
+        convStartAt = System.currentTimeMillis()
+        convBefore = srcFile?.length() ?: (job.path?.let { File(it).length() } ?: 0L)
+        val pm = ctx.getSystemService(android.os.PowerManager::class.java)
+        // 긴 변환이 도는 동안에도 새 파일 정리(변환 필요 없는 것)는 따로 바로 진행
+        if (converting) quickKick(ctx)
+        // 먼저 그래픽 칩을 안 거치는 직접 변환 (화면 꺼져도 멈추지 않게). 안 되면 기존 방식으로
+        val directSrc = srcFile
+        if (converting && directSrc != null && directSrc.exists()) {
+            val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+            directStop = stop
+            var lastMove = System.currentTimeMillis(); var lastP = -1; var lastOffLog = 0L
+            val th = Thread({
+                val err = Direct.run(directSrc, out, bitrate ?: 2_000_000, { p -> percent = p; onChange?.invoke() }, { stop.get() })
+                h.post {
+                    if (current !== job) return@post
+                    directStop = null
+                    encName = Direct.encoderName
+                    if (err == null) finish(ctx, job, out, true, "")
+                    else if (stop.get() && err == "취소됨") finish(ctx, job, out, false, "멈춤")
+                    else {
+                        RecordService.addLog("직접 변환 안 됨($err) → 기존 방식으로 변환: ${job.name}")
+                        out.delete(); percent = 0; onChange?.invoke()
+                        startTransformer(ctx, job, input, out, bitrate, pm)
+                    }
+                }
+            }, "direct-convert")
+            th.start()
+            // 감시: 화면이 꺼져 있어도 5분 동안 진행이 없으면 멈춘 것 → 포기. 화면 꺼진 동안엔 1분마다 진행률 기록
+            val watch = object : Runnable {
+                override fun run() {
+                    if (current !== job || directStop !== stop) return
+                    val now = System.currentTimeMillis()
+                    if (!pm.isInteractive) {
+                        screenOffSec += 1
+                        if (now - lastOffLog >= 60_000) { lastOffLog = now; RecordService.addLog("화면 꺼짐 · 변환 ${percent}% (직접 변환): ${job.name}") }
+                    }
+                    if (percent != lastP) { lastP = percent; lastMove = now }
+                    else if (now - lastMove > 5 * 60_000L) {
+                        RecordService.addLog("변환이 5분째 멈춤(${percent}%, 화면 ${if (pm.isInteractive) "켜짐" else "꺼짐"}) → 이 파일 변환 포기: ${job.name}")
+                        stop.set(true); return
+                    }
+                    h.postDelayed(this, 1000)
+                }
+            }
+            h.postDelayed(watch, 1000)
+            return
+        }
+        startTransformer(ctx, job, input, out, bitrate, pm)
+    }
+
+    @Volatile private var directStop: java.util.concurrent.atomic.AtomicBoolean? = null
+
+    // ── 빠른 정리 줄: 변환이 필요 없는 파일(이미 H.265 등)은 긴 변환을 기다리지 않고 따로 정리 → 바로 업로드 ──
+    private val remuxLock = Any()
+    @Volatile var quickCurrent: String? = null; private set
+    @Volatile var quickPercent = 0; private set
+    @Volatile private var quickThread: Thread? = null
+    private val quickTried = java.util.Collections.synchronizedSet(HashSet<String>())
+    private val mimeCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    private fun needsConvert(ctx: Context, j: Job): Boolean {
+        if (!autoH265(ctx) || !Codec.phoneHasHevcEncoder()) return false
+        val p = j.path ?: return true
+        val m = mimeCache.getOrPut(j.name) { Codec.probeUri(ctx, Uri.fromFile(File(p))) ?: "?" }
+        return m == android.media.MediaFormat.MIMETYPE_VIDEO_AVC || m == "?"
+    }
+
+    fun quickKick(ctx: Context) {
+        val app = ctx.applicationContext
+        synchronized(this) {
+            if (quickThread?.isAlive == true) return
+            quickThread = Thread({ quickLoop(app) }, "tidy-quick").also { it.start() }
+        }
+    }
+
+    private fun quickLoop(ctx: Context) {
+        while (true) {
+            // 큰 변환이 도는 동안만 (안 돌면 원래 줄이 바로 처리)
+            if (!converting) break
+            val cands = synchronized(queue) { queue.filter { !isTidied(ctx, it.name) && it.path != null && it.name !in quickTried && it.name.lowercase().endsWith(".mp4") }.toList() }
+            val job = cands.firstOrNull { File(it.path!!).exists() && !RecordService.isActiveFile(it.name) && !needsConvert(ctx, it) } ?: break
+            if (!synchronized(queue) { queue.remove(job) }) continue
+            quickTried.add(job.name)
+            quickCurrent = job.name; quickPercent = 0; onChange?.invoke()
+            val workDir = File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "tidy_quick").apply { mkdirs() }
+            val dedup = File(workDir, "dedup_" + job.name).also { it.delete() }
+            val rem = File(workDir, "remux_" + job.name).also { it.delete() }
+            var ok = false
+            try {
+                var src = File(job.path!!)
+                if (Mp4.removeDuplicateInits(src, dedup) > 0) src = dedup else dedup.delete()
+                val err = synchronized(remuxLock) { Remux.run(src, rem) { p -> quickPercent = p; onChange?.invoke() } }
+                if (err == null && rem.length() > 0) {
+                    replace(ctx, job, rem)
+                    markTidied(ctx, job.name)
+                    ok = true
+                    RecordService.addLog("정리 완료 (변환 기다리지 않고 따로): ${job.name}")
+                    Uploader.enqueue(ctx, job.name, job.path, job.streamer)
+                } else RecordService.addLog("따로 정리 실패 → 원래 줄에서 다시: ${job.name} ($err)")
+            } catch (e: Exception) {
+                RecordService.addLog("따로 정리 실패 → 원래 줄에서 다시: ${job.name} (${e.message})")
+            } finally {
+                dedup.delete(); rem.delete()
+                quickCurrent = null
+            }
+            if (!ok) synchronized(queue) { queue.addFirst(job) }
+            persist(); onChange?.invoke()
+        }
+        synchronized(this) { quickThread = null }
+    }
+
+    /** 기존 방식(Media3, 그래픽 칩 사용) 변환 */
+    private fun startTransformer(ctx: Context, job: Job, input: Uri, out: File, bitrate: Int?, pm: android.os.PowerManager) {
+        val h = handler ?: return
         val tb = Transformer.Builder(ctx).setLooper(h.looper)
         if (converting) {
             tb.setVideoMimeType(MimeTypes.VIDEO_H265)
-            val src = srcFile?.length() ?: 0L
-            val bitrate = if (videoBps > 0) {
-                // 실제 영상 비트레이트의 55% (흐린 화면처럼 아주 낮으면 그만큼 낮게 → 원본보다 커지지 않게)
-                (videoBps * 55 / 100).coerceIn(30_000, 8_000_000).toInt()
-            } else try {
-                val r = android.media.MediaMetadataRetriever()
-                try {
-                    r.setDataSource(ctx, input)
-                    val ms = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0
-                    if (ms > 5000 && src > 0) {
-                        // 원본 영상 비트레이트의 55% (원본보다 커지지 않게, 최소 15만)
-                        val srcV = (src * 8 * 1000 / ms - 160_000).coerceAtLeast(150_000)
-                        (srcV * 55 / 100).coerceIn(150_000, minOf(srcV, 8_000_000)).toInt()
-                    } else null
-                } finally { r.release() }
-            } catch (e: Exception) { null }
             val enc = DefaultEncoderFactory.Builder(ctx).setEnableFallback(true)
             if (bitrate != null) enc.setRequestedVideoEncoderSettings(VideoEncoderSettings.Builder().setBitrate(bitrate).build())
             tb.setEncoderFactory(enc.build())
@@ -497,10 +615,7 @@ object Tidy {
         } catch (e: Exception) {
             finish(ctx, job, out, false, e.message ?: "시작 실패"); return
         }
-        var lastP = -1; var lastMove = System.currentTimeMillis(); var offStall = 0L
-        val pm = ctx.getSystemService(android.os.PowerManager::class.java)
-        convStartAt = System.currentTimeMillis()
-        convBefore = srcFile?.length() ?: (job.path?.let { File(it).length() } ?: 0L)
+        var lastP = -1; var lastMove = System.currentTimeMillis(); var lastOffLog = 0L
         val poll = object : Runnable {
             override fun run() {
                 if (current !== job) return
@@ -509,17 +624,15 @@ object Tidy {
                     onChange?.invoke()
                 }
                 val now = System.currentTimeMillis()
-                if (!pm.isInteractive) screenOffSec += 1
-                if (percent != lastP) { lastP = percent; lastMove = now; offStall = 0L }
-                else if (!pm.isInteractive) {
-                    // 화면 꺼진 동안 멈춘 건 포기하지 않음 (켜지면 이어서). 3분 넘게 멈추면 이 폰 문제로 보고 안내
-                    if (offStall == 0L) offStall = now
-                    if (now - offStall > 3 * 60_000L) ScreenOff.warn(ctx)
-                    lastMove = now
+                if (!pm.isInteractive) {
+                    screenOffSec += 1
+                    if (now - lastOffLog >= 60_000) { lastOffLog = now; RecordService.addLog("화면 꺼짐 · 변환 ${percent}% (기존 방식): ${job.name}") }
                 }
+                if (percent != lastP) { lastP = percent; lastMove = now }
                 else if (now - lastMove > 5 * 60_000L) {
-                    // 5분 동안 진행이 없으면 멈춘 것 → 변환 포기하고 그대로 업로드
-                    RecordService.addLog("변환이 5분째 멈춤(${percent}%) → 변환 포기, 그대로 업로드: ${job.name}")
+                    // 화면이 꺼져 있어도 5분 동안 진행이 없으면 멈춘 것 → 이 파일 변환 포기 (업로드가 기다리지 않게)
+                    if (!pm.isInteractive) ScreenOff.warn(ctx)
+                    RecordService.addLog("변환이 5분째 멈춤(${percent}%, 화면 ${if (pm.isInteractive) "켜짐" else "꺼짐"}) → 변환 포기: ${job.name}")
                     try { t.cancel() } catch (_: Exception) {}
                     finish(ctx, job, out, false, "멈춤")
                     return
