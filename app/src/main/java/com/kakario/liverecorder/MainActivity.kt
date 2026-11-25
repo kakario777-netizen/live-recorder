@@ -213,11 +213,14 @@ class MainActivity : Activity() {
         Sync.startRecorderService(this)
     }
 
+    private var batteryHelpShown = false
     override fun onResume() {
         super.onResume()
         updater.onResume()
         CloudBm.startLoop(this)
         if (CloudBm.on(this)) Thread { CloudBm.sync(applicationContext) }.start()
+        // 화면 꺼지면 변환이 멈췄던 폰인데 아직 배터리 최적화 제외가 안 돼 있으면 다시 안내
+        if (ScreenOff.stalled(this) && !ScreenOff.exempt(this) && !batteryHelpShown) { batteryHelpShown = true; batteryHelp() }
         if (RecordService.running) RecordService.addLog("앱 화면 열림 (탭 ${tabs.size}개" + (web.url?.let { ", 지금 탭: " + Names.siteName(it) } ?: "") + ")")
     }
 
@@ -236,6 +239,26 @@ class MainActivity : Activity() {
         super.onNewIntent(intent)
         sharedUrl(intent)?.let { newTab(it) }
         intent.getStringExtra("openUrl")?.let { u -> urlBox.setText(u); Sniff.clear(); web.loadUrl(u) }
+        if (intent.getBooleanExtra("batteryHelp", false)) batteryHelp()
+    }
+
+    /** 화면 꺼지면 변환이 멈추는 폰: 할 일 안내 + 설정 화면 바로 열기 */
+    @SuppressLint("BatteryLife")
+    private fun batteryHelp() {
+        val ex = ScreenOff.exempt(this)
+        val msg = (if (!ex) "1) 아래 '배터리 최적화 제외'를 눌러 '허용'을 눌러 주세요.\n\n" else "배터리 최적화 제외는 이미 돼 있어요.\n\n") +
+            "2) '앱 설정 열기' → 배터리 → '제한 없음'(또는 '절전 예외', '사용하지 않는 앱을 절전 상태로 전환' 끄기)으로 바꿔 주세요.\n\n" +
+            "그래도 화면이 꺼지면 느려지거나 멈추면 '검은 화면 켜 두기'를 쓰세요. 화면을 밝기 최저의 검은 화면으로 켜 둔 채 변환해서, 폰이 앱을 재우거나 끄지 못해요 (충전기에 꽂아 두세요)."
+        AlertDialog.Builder(this).setTitle("화면이 꺼지면 변환이 멈춰요")
+            .setMessage(msg)
+            .setPositiveButton(if (!ex) "배터리 최적화 제외" else "확인") { _, _ ->
+                if (!ex) try { startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))) } catch (_: Exception) {}
+            }
+            .setNeutralButton("앱 설정 열기") { _, _ ->
+                try { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) } catch (_: Exception) {}
+            }
+            .setNegativeButton("검은 화면 켜 두기") { _, _ -> startActivity(Intent(this, KeepOnActivity::class.java)) }
+            .show()
     }
 
     private fun sharedUrl(i: Intent?): String? {
@@ -820,6 +843,10 @@ class MainActivity : Activity() {
         line()
         toggle("변환 기록 남기기", "파일마다 크기·걸린 시간·속도를 기록 (아래에서 보기·복사)", prefs.getBoolean("convLog", false)) { v ->
             prefs.edit().putBoolean("convLog", v).apply()
+        }
+        line()
+        row("검은 화면 켜 두기", "화면이 꺼지면 변환이 느려지는 폰용 · 밝기 최저로 켜 둔 채 변환 (충전 중 권장)") {
+            startActivity(Intent(ctx, KeepOnActivity::class.java))
         }
         line()
         row("변환 기록 보기", "기록 남기기를 켠 뒤 변환된 파일들") {

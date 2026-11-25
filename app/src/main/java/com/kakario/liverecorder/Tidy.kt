@@ -449,7 +449,8 @@ object Tidy {
         } catch (e: Exception) {
             finish(ctx, job, out, false, e.message ?: "시작 실패"); return
         }
-        var lastP = -1; var lastMove = System.currentTimeMillis()
+        var lastP = -1; var lastMove = System.currentTimeMillis(); var offStall = 0L
+        val pm = ctx.getSystemService(android.os.PowerManager::class.java)
         convStartAt = System.currentTimeMillis()
         convBefore = srcFile?.length() ?: (job.path?.let { File(it).length() } ?: 0L)
         val poll = object : Runnable {
@@ -459,8 +460,15 @@ object Tidy {
                     percent = holder.progress
                     onChange?.invoke()
                 }
-                if (percent != lastP) { lastP = percent; lastMove = System.currentTimeMillis() }
-                else if (System.currentTimeMillis() - lastMove > 5 * 60_000L) {
+                val now = System.currentTimeMillis()
+                if (percent != lastP) { lastP = percent; lastMove = now; offStall = 0L }
+                else if (!pm.isInteractive) {
+                    // 화면 꺼진 동안 멈춘 건 포기하지 않음 (켜지면 이어서). 3분 넘게 멈추면 이 폰 문제로 보고 안내
+                    if (offStall == 0L) offStall = now
+                    if (now - offStall > 3 * 60_000L) ScreenOff.warn(ctx)
+                    lastMove = now
+                }
+                else if (now - lastMove > 5 * 60_000L) {
                     // 5분 동안 진행이 없으면 멈춘 것 → 변환 포기하고 그대로 업로드
                     RecordService.addLog("변환이 5분째 멈춤(${percent}%) → 변환 포기, 그대로 업로드: ${job.name}")
                     try { t.cancel() } catch (_: Exception) {}

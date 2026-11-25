@@ -26,6 +26,8 @@
         <activity android:name=".BookmarksActivity" android:label="즐겨찾기" />
         <activity android:name=".StatusActivity" android:label="녹화 현황" />
         <activity android:name=".RemoteStatusActivity" android:label="녹화폰 현황" android:exported="false" />
+        <activity android:name=".KeepOnActivity" android:label="변환용 화면" android:exported="false"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" android:excludeFromRecents="true" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

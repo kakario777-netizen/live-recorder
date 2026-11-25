@@ -80,7 +80,7 @@ object FtpConfig {
  * - 대기 목록은 저장해 둬서 앱이 꺼졌다 켜져도 이어서 처리
  */
 object Uploader {
-    class Job(val name: String, val path: String, val streamer: String, var tries: Int = 0, var nextAt: Long = 0, var lastError: String = "")
+    class Job(val name: String, var path: String, val streamer: String, var tries: Int = 0, var nextAt: Long = 0, var lastError: String = "")
 
     private val queue = ArrayList<Job>()
     @Volatile var current: Job? = null; private set
@@ -263,7 +263,7 @@ object Uploader {
                 job.nextAt = System.currentTimeMillis() + waitMin * 60_000L
                 lastResult = "업로드 실패(${job.tries}번째): ${job.name} — ${job.lastError}"
                 RecordService.addLog("$lastResult → ${waitMin}분 뒤 다시")
-                if (File(job.path).exists()) synchronized(queue) { queue.add(job) }
+                if (job.tries < 99 && File(job.path).exists()) synchronized(queue) { queue.add(job) }
             }
             persist(ctx)
             onChange?.invoke()
@@ -344,8 +344,10 @@ object Uploader {
     }
 
     private fun upload(ctx: Context, job: Job) {
-        val src = File(job.path)
-        if (!src.exists()) throw Exception("원본 파일이 없어요")
+        // 경로가 바뀌었으면(정리·변환 뒤 자리 이동 등) 이름으로 다시 찾음. 정말 없으면 다시 시도하지 않음
+        val src = File(job.path).takeIf { it.exists() }
+            ?: Tidy.pathFor(job.name)?.let { File(it) }?.takeIf { it.exists() }?.also { job.path = it.absolutePath }
+            ?: run { job.tries = 99; throw Exception("원본 파일이 없어요 (이미 올렸거나 지워짐) → 줄에서 뺌") }
         val total = src.length()
         // 스트리머 정보가 빠진 채 들어온 파일(직접 정리·직접 변환 등)은 파일 이름에서 꺼냄
         val folderName = Names.clean(job.streamer).ifEmpty { Names.streamerFromFileName(job.name) }.ifEmpty { "기타" }
