@@ -271,8 +271,8 @@ object Uploader {
                 job.tries++
                 val waitMin = when (job.tries) { 1 -> 1; 2 -> 5; 3 -> 15; else -> 30 }
                 job.nextAt = System.currentTimeMillis() + waitMin * 60_000L
-                lastResult = "업로드 실패(${job.tries}번째): ${job.name} — ${job.lastError}"
-                RecordService.addLog("$lastResult → ${waitMin}분 뒤 다시")
+                lastResult = if (job.tries >= 99) "업로드 건너뜀: ${job.name} — ${job.lastError}" else "업로드 실패(${job.tries}번째): ${job.name} — ${job.lastError}"
+                RecordService.addLog(if (job.tries >= 99) lastResult else "$lastResult → ${waitMin}분 뒤 다시")
                 if (job.tries < 99 && File(job.path).exists()) synchronized(queue) { queue.add(job) }
             }
             persist(ctx)
@@ -445,21 +445,26 @@ object Uploader {
     fun cleanTrash(ctx: Context) {
         val limit = System.currentTimeMillis() - trashHours(ctx) * 3600_000L
         val up = uploadedNames(ctx)
+        // 잘못 보류함으로 갔던 H.264 원본(변환본은 이미 올라감)은 휴지통으로 되돌림
+        Hold.files().filter { it.name.contains("(H.264 원본)") && up.contains(baseName(it.name)) }.forEach { it.renameTo(File(trashDir(), it.name)) }
         trashDir().listFiles()?.forEach {
             if (it.name == ".nomedia") return@forEach
             // 업로드된 적 없는 파일(직접 휴지통에 넣은 것 등)은 지우지 않고 보류함으로
-            if (!up.contains(it.name) && !it.name.endsWith(".ass") && !it.name.endsWith(".txt")) { if (Hold.put(it)) RecordService.addLog("휴지통에 업로드 안 된 파일 → 지우지 않고 보류함으로: ${it.name}"); return@forEach }
+            if (!up.contains(it.name) && !up.contains(baseName(it.name)) && !it.name.endsWith(".ass") && !it.name.endsWith(".txt")) { if (Hold.put(it)) RecordService.addLog("휴지통에 업로드 안 된 파일 → 지우지 않고 보류함으로: ${it.name}"); return@forEach }
             if (it.lastModified() < limit) it.delete()
         }
     }
     private fun uploadedNames(ctx: Context): Set<String> = history(ctx).map { it.name }.toSet()
+    /** 변환 뒤 휴지통에 들어간 'xxx (H.264 원본).mp4'는 변환본 이름(xxx.mp4)이 올라갔으면 올라간 것으로 침 */
+    private fun baseName(n: String) = n.replace(" (H.264 원본)", "")
+    fun wasUploaded(ctx: Context, name: String): Boolean = uploadedNames(ctx).let { it.contains(name) || it.contains(baseName(name)) }
 
     /** 휴지통 전부 지우기 → (개수, MB) */
     fun emptyTrash(): Pair<Int, Long> {
         var n = 0; var b = 0L
         val up = appCtx?.let { uploadedNames(it) } ?: emptySet()
         trashFiles().forEach {
-            if (appCtx != null && !up.contains(it.name) && it.name.endsWith(".mp4")) { Hold.put(it); return@forEach }   // 업로드 안 된 건 보류함으로
+            if (appCtx != null && !up.contains(it.name) && !up.contains(baseName(it.name)) && it.name.endsWith(".mp4")) { Hold.put(it); return@forEach }   // 업로드 안 된 건 보류함으로
             val l = it.length(); if (it.delete()) { n++; b += l }
         }
         RecordService.addLog("휴지통 비움: ${n}개 · ${b / 1024 / 1024}MB")

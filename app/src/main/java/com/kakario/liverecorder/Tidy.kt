@@ -342,6 +342,12 @@ object Tidy {
             handler?.post { next(ctx) }
             return
         }
+        // 이미 올라간 파일이 다시 줄에 들어온 거면 건너뜀 (두 번 변환·실패 방지)
+        if (Uploader.wasUploaded(ctx, job.name)) {
+            RecordService.addLog("이미 올린 파일이라 건너뜀: ${job.name}")
+            persist(); handler?.post { next(ctx) }
+            return
+        }
         // 같은 파일을 하다가 앱이 꺼져 3번째 다시 시작하는 거면 → 보류함으로 빼고 다음 파일 (지우지 않음, 나중에 되돌리기)
         val sp = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
         val starts = sp.getInt("starts:" + job.name, 0) + 1
