@@ -342,6 +342,17 @@ object Tidy {
             handler?.post { next(ctx) }
             return
         }
+        // 같은 파일을 하다가 앱이 꺼져 3번째 다시 시작하는 거면 → 보류함으로 빼고 다음 파일 (지우지 않음, 나중에 되돌리기)
+        val sp = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
+        val starts = sp.getInt("starts:" + job.name, 0) + 1
+        if (starts >= 3) {
+            sp.edit().remove("starts:" + job.name).apply()
+            val src = File(job.path ?: pathFor(job.name) ?: "")
+            if (src.exists() && Hold.put(src)) RecordService.addLog("계속 중간에 끊겨서 보류함으로 뺌 (지우지 않음, 나중에 되돌리기): ${job.name}")
+            persist(); handler?.post { next(ctx) }
+            return
+        }
+        sp.edit().putInt("starts:" + job.name, starts).apply()
         current = job
         percent = 0
         onChange?.invoke()
@@ -482,6 +493,7 @@ object Tidy {
     }
 
     private fun finish(ctx: Context, job: Job, out: File, ok: Boolean, err: String) {
+        ctx.getSharedPreferences("main", Context.MODE_PRIVATE).edit().remove("starts:" + job.name).apply()
         var msg: String
         if (ok && out.length() > 0) {
             msg = try {

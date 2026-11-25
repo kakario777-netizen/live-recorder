@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.LinearLayout
@@ -27,6 +28,25 @@ class FilesActivity : Activity() {
     /** 날짜 줄 (스크롤바 말풍선에 날짜 보여 주기용) */
     private val dayHeaders = ArrayList<Pair<android.view.View, String>>()
     private lateinit var head: TextView
+    private lateinit var holdBtn: Button
+
+    /** 보류함 + 빠진 파일 → 되돌려 다시 정리 */
+    private fun showHold() {
+        val hold = Hold.files()
+        val miss = Uploader.missing(this)
+        val lines = hold.map { "보류 · ${it.length() / 1048576}MB · ${it.name}" } + miss.map { "빠짐 · $it" }
+        AlertDialog.Builder(this).setTitle("보류함 ${hold.size}개 · 빠진 파일 ${miss.size}개")
+            .setMessage((if (lines.isEmpty()) "없어요" else lines.joinToString("\n")) +
+                "\n\n보류함 파일은 지우지 않고 따로 둔 거예요. '다시 정리'를 누르면 원래 자리로 되돌려 정리·변환·업로드 줄에 다시 넣어요. 빠진 파일은 다시 찾아봐요(휴지통에서 꺼내 두셨으면 다시 잡혀요).")
+            .setPositiveButton("다시 정리") { _, _ ->
+                var n = 0
+                hold.forEach { if (Hold.restore(this, it)) n++ }
+                Uploader.clearMissing(this)
+                Tidy.sweep(this)
+                Toast.makeText(this, "${n}개 되돌리고 다시 찾는 중", Toast.LENGTH_SHORT).show()
+                reload()
+            }.setNegativeButton("닫기", null).show()
+    }
     private val codecCache = ConcurrentHashMap<String, String>()
     private var items: List<Library.Item> = emptyList()
     private val prefs by lazy { getSharedPreferences("main", MODE_PRIVATE) }
@@ -69,6 +89,12 @@ class FilesActivity : Activity() {
 
         head = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#666666")); setPadding(dp(14), dp(2), dp(14), dp(6)) }
         root.addView(head)
+        // 보류함·빠진 파일: 다 끝나면 다시 정리
+        holdBtn = Button(this).apply {
+            isAllCaps = false; textSize = 13f
+            setOnClickListener { showHold() }
+        }
+        root.addView(holdBtn, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(12), 0, dp(12), dp(4)) })
 
         listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll = ScrollView(this).apply { addView(listBox); isVerticalScrollBarEnabled = false }
@@ -137,6 +163,10 @@ class FilesActivity : Activity() {
 
     private fun render() {
         val cur = ConvertService.current
+        val nh = Hold.files().size; val nm = Uploader.missing(this).size
+        holdBtn.visibility = if (nh + nm > 0) View.VISIBLE else View.GONE
+        val idle = Tidy.current == null && Tidy.queuedNames().isEmpty() && Uploader.current == null
+        holdBtn.text = (if (idle) "다 끝났어요 → " else "") + "보류함 ${nh}개 · 빠진 파일 ${nm}개 · 다시 정리"
         head.text = buildString {
             append("내 파일 > ${Saver.FOLDER} · ${items.size}개")
             if (!Codec.phoneHasHevcEncoder()) append("\n이 폰에는 H.265 인코더가 없어 변환할 수 없어요")

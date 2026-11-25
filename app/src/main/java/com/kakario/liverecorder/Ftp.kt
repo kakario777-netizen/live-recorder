@@ -164,8 +164,18 @@ object Uploader {
     }
 
     /** 앱·서비스가 켜질 때 남은 업로드 이어서 처리 */
+    @Volatile var appCtx: Context? = null
+    /** 올리려는데 파일이 없던 것들 (우선 넘어가고, 다 끝나면 '다시 정리'로 찾아봄) */
+    fun missing(ctx: Context): Set<String> = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getStringSet("missingNames", emptySet()) ?: emptySet()
+    fun clearMissing(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).edit().remove("missingNames").apply()
+    private fun addMissing(ctx: Context, name: String) {
+        val p = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
+        p.edit().putStringSet("missingNames", (p.getStringSet("missingNames", emptySet()) ?: emptySet()) + name).apply()
+    }
+
     fun kick(ctx: Context) {
         val app = ctx.applicationContext
+        appCtx = app
         load(app)
         if (!FtpConfig.ready(app)) return
         synchronized(this) {
@@ -347,7 +357,7 @@ object Uploader {
         // 경로가 바뀌었으면(정리·변환 뒤 자리 이동 등) 이름으로 다시 찾음. 정말 없으면 다시 시도하지 않음
         val src = File(job.path).takeIf { it.exists() }
             ?: Tidy.pathFor(job.name)?.let { File(it) }?.takeIf { it.exists() }?.also { job.path = it.absolutePath }
-            ?: run { job.tries = 99; throw Exception("원본 파일이 없어요 (이미 올렸거나 지워짐) → 줄에서 뺌") }
+            ?: run { job.tries = 99; addMissing(ctx, job.name); throw Exception("파일이 없어요 → 우선 넘어감 (다 끝나면 '다시 정리'로 다시 찾음)") }
         val total = src.length()
         // 스트리머 정보가 빠진 채 들어온 파일(직접 정리·직접 변환 등)은 파일 이름에서 꺼냄
         val folderName = Names.clean(job.streamer).ifEmpty { Names.streamerFromFileName(job.name) }.ifEmpty { "기타" }
@@ -434,13 +444,24 @@ object Uploader {
     /** 휴지통에서 보관 시간 지난 파일 삭제 */
     fun cleanTrash(ctx: Context) {
         val limit = System.currentTimeMillis() - trashHours(ctx) * 3600_000L
-        trashDir().listFiles()?.forEach { if (it.name != ".nomedia" && it.lastModified() < limit) it.delete() }
+        val up = uploadedNames(ctx)
+        trashDir().listFiles()?.forEach {
+            if (it.name == ".nomedia") return@forEach
+            // 업로드된 적 없는 파일(직접 휴지통에 넣은 것 등)은 지우지 않고 보류함으로
+            if (!up.contains(it.name) && !it.name.endsWith(".ass") && !it.name.endsWith(".txt")) { if (Hold.put(it)) RecordService.addLog("휴지통에 업로드 안 된 파일 → 지우지 않고 보류함으로: ${it.name}"); return@forEach }
+            if (it.lastModified() < limit) it.delete()
+        }
     }
+    private fun uploadedNames(ctx: Context): Set<String> = history(ctx).map { it.name }.toSet()
 
     /** 휴지통 전부 지우기 → (개수, MB) */
     fun emptyTrash(): Pair<Int, Long> {
         var n = 0; var b = 0L
-        trashFiles().forEach { val l = it.length(); if (it.delete()) { n++; b += l } }
+        val up = appCtx?.let { uploadedNames(it) } ?: emptySet()
+        trashFiles().forEach {
+            if (appCtx != null && !up.contains(it.name) && it.name.endsWith(".mp4")) { Hold.put(it); return@forEach }   // 업로드 안 된 건 보류함으로
+            val l = it.length(); if (it.delete()) { n++; b += l }
+        }
         RecordService.addLog("휴지통 비움: ${n}개 · ${b / 1024 / 1024}MB")
         return n to b / 1024 / 1024
     }

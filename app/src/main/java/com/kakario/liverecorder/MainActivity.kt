@@ -221,6 +221,8 @@ class MainActivity : Activity() {
         if (CloudBm.on(this)) Thread { CloudBm.sync(applicationContext) }.start()
         // 화면 꺼지면 변환이 멈췄던 폰인데 아직 배터리 최적화 제외가 안 돼 있으면 다시 안내
         if (ScreenOff.stalled(this) && !ScreenOff.exempt(this) && !batteryHelpShown) { batteryHelpShown = true; batteryHelp() }
+        // 검은 화면 켜 두기가 켜져 있고 할 일이 있으면 다시 띄움
+        else if (KeepOnActivity.on(this) && (Tidy.busy() || Uploader.busy())) startActivity(Intent(this, KeepOnActivity::class.java))
         if (RecordService.running) RecordService.addLog("앱 화면 열림 (탭 ${tabs.size}개" + (web.url?.let { ", 지금 탭: " + Names.siteName(it) } ?: "") + ")")
     }
 
@@ -845,8 +847,9 @@ class MainActivity : Activity() {
             prefs.edit().putBoolean("convLog", v).apply()
         }
         line()
-        row("검은 화면 켜 두기", "화면이 꺼지면 변환이 느려지는 폰용 · 밝기 최저로 켜 둔 채 변환 (충전 중 권장)") {
-            startActivity(Intent(ctx, KeepOnActivity::class.java))
+        toggle("검은 화면 켜 두기", "화면이 꺼지면 변환이 느려지는 폰용 · 할 일이 있으면 밝기 최저 검은 화면으로 켜 둔 채 변환 (충전 중 권장)", KeepOnActivity.on(ctx)) { v ->
+            KeepOnActivity.set(ctx, v)
+            if (v) startActivity(Intent(ctx, KeepOnActivity::class.java))
         }
         line()
         row("변환 기록 보기", "기록 남기기를 켠 뒤 변환된 파일들") {

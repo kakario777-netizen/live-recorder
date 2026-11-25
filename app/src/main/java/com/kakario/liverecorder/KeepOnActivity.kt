@@ -16,6 +16,10 @@ import android.widget.Toast
  * 앱이 앞에 있으니 폰이 앱을 끄지도 않음. 글자는 1분마다 자리를 옮겨 화면 자국을 막음. 두 번 누르면 닫힘.
  */
 class KeepOnActivity : Activity() {
+    companion object {
+        fun on(ctx: android.content.Context) = ctx.getSharedPreferences("main", android.content.Context.MODE_PRIVATE).getBoolean("keepOn", false)
+        fun set(ctx: android.content.Context, v: Boolean) = ctx.getSharedPreferences("main", android.content.Context.MODE_PRIVATE).edit().putBoolean("keepOn", v).apply()
+    }
     private val h = Handler(Looper.getMainLooper())
     private lateinit var tv: TextView
     private var lastTap = 0L
@@ -31,11 +35,13 @@ class KeepOnActivity : Activity() {
             addView(tv, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
             setOnClickListener {
                 val now = System.currentTimeMillis()
-                if (now - lastTap < 1500) finish() else Toast.makeText(this@KeepOnActivity, "한 번 더 누르면 닫혀요", Toast.LENGTH_SHORT).show()
+                if (now - lastTap < 1500) { set(this@KeepOnActivity, false); finish(); Toast.makeText(this@KeepOnActivity, "검은 화면 켜 두기를 껐어요", Toast.LENGTH_SHORT).show() }
+                else Toast.makeText(this@KeepOnActivity, "한 번 더 누르면 꺼져요", Toast.LENGTH_SHORT).show()
                 lastTap = now
             }
         }
         setContentView(root)
+        set(this, true)
         RecordService.addLog("변환용 검은 화면 켬 (화면 켜 둔 채 변환)")
         update()
     }
@@ -44,7 +50,7 @@ class KeepOnActivity : Activity() {
         val c = Tidy.current
         val wait = Tidy.queuedNames().size
         val up = Uploader.current
-        tv.text = "변환용 화면 켜 둠 · 두 번 누르면 닫기\n" +
+        tv.text = "변환용 화면 켜 둠 · 두 번 누르면 끄기\n" +
             (if (c != null) (if (Tidy.converting) "변환 중 ${Tidy.percent}%" else "정리 중 ${Tidy.percent}%") + "\n" else "변환할 것 없음\n") +
             "대기 ${wait}개 · 업로드 " + (if (up != null) "${Uploader.percent}%" else "쉬는 중")
         if (tick++ % 12 == 0) {   // 1분마다 글자 자리 이동
