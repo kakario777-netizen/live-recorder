@@ -240,6 +240,26 @@ object Tidy {
             RecordService.addLog("남아 있던 파일 자동 정리: $n")
             enqueue(ctx, Job(n, f.absolutePath, null, Names.streamerFromFileName(n)))
         }
+        sweepUploads(ctx, true)
+    }
+
+    /** 정리는 끝났는데 어느 줄(정리·변환·업로드)에도 없는 파일 → 업로드 줄에 다시 넣음 (빠져서 영영 안 올라가는 일 없게) */
+    @Volatile private var lastUpSweep = 0L
+    fun sweepUploads(ctx: Context, force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastUpSweep < 5 * 60_000L) return
+        lastUpSweep = now
+        if (!FtpConfig.ready(ctx)) return
+        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), Saver.DIR)
+        val active = RecordService.fileStates().keys
+        dir.listFiles()?.filter { it.isFile && it.length() > 0 && !it.name.endsWith(".ass") && !it.name.endsWith(".txt") && !it.name.endsWith(".part") }?.forEach { f ->
+            val n = f.name
+            val mp4 = n.lowercase().endsWith(".mp4")
+            if (n in active || (mp4 && !isTidied(ctx, n)) || statusOf(n) != null || Uploader.statusOf(n) != null || isFailed(n)) return@forEach
+            if (Uploader.wasUploaded(ctx, n)) return@forEach
+            RecordService.addLog("정리는 끝났는데 업로드 줄에 없던 파일 → 다시 넣음: $n")
+            Uploader.enqueue(ctx, n, f.absolutePath, Names.streamerFromFileName(n))
+        }
     }
 
     /** 파일 목록 표시용: 정리 안 된 채 남은 파일이 곧 자동 정리되는지 */
@@ -253,6 +273,7 @@ object Tidy {
         override fun run() {
             val ctx = appCtx ?: return
             try { Uploader.cleanTrash(ctx) } catch (_: Exception) {}
+            try { sweepUploads(ctx) } catch (_: Exception) {}
             val ok = charging(ctx)
             if (synchronized(queue) { waitCharge.isNotEmpty() }) onPowerConnected(ctx)   // 충전 대기 없이 바로 처리
             // 변환 중인데 80% 아래로 떨어졌고 충전기도 없으면 멈춤

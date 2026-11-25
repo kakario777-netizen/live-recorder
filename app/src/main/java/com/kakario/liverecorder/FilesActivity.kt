@@ -33,6 +33,10 @@ class FilesActivity : Activity() {
     private lateinit var convLine: TextView
     private lateinit var upLine: TextView
     private lateinit var recentLine: TextView
+    private lateinit var convName: TextView
+    private lateinit var upName: TextView
+    private lateinit var recentName: TextView
+    private fun setName(v: TextView, t: String) { if (v.text.toString() != t) { v.text = t; v.isSelected = true } }
 
     /** 보류함 + 빠진 파일 → 되돌려 다시 정리 */
     private fun showHold() {
@@ -84,14 +88,24 @@ class FilesActivity : Activity() {
             orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(8), dp(12), dp(8))
             background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#F5F6F8")); cornerRadius = dp(10).toFloat() }
         }
-        fun line(sz: Float, color: String) = TextView(this).apply {
-            textSize = sz; setTextColor(Color.parseColor(color)); isSingleLine = true
-            ellipsize = android.text.TextUtils.TruncateAt.MARQUEE; marqueeRepeatLimit = -1; isSelected = true
-            setPadding(0, dp(2), 0, dp(2))
+        // 앞 글자(상태)는 고정, 파일명만 한 줄로 흐름
+        fun line(sz: Float, color: String): Pair<TextView, TextView> {
+            val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(2), 0, dp(2)) }
+            val lab = TextView(this).apply { textSize = sz; setTextColor(Color.parseColor(color)); isSingleLine = true; setTypeface(null, Typeface.BOLD) }
+            val nm = TextView(this).apply {
+                textSize = sz; setTextColor(Color.parseColor("#444444")); isSingleLine = true
+                ellipsize = android.text.TextUtils.TruncateAt.MARQUEE; marqueeRepeatLimit = -1; isSelected = true; setHorizontallyScrolling(true)
+                setPadding(dp(6), 0, 0, 0)
+            }
+            row.addView(lab); row.addView(nm, LinearLayout.LayoutParams(0, -2, 1f))
+            card.addView(row)
+            return lab to nm
         }
-        statLine = line(13f, "#222222").apply { setTypeface(null, Typeface.BOLD) }
-        convLine = line(12.5f, "#6A1B9A"); upLine = line(12.5f, "#2E7D32"); recentLine = line(12f, "#666666")
-        card.addView(statLine); card.addView(convLine); card.addView(upLine); card.addView(recentLine)
+        statLine = TextView(this).apply { textSize = 13f; setTypeface(null, Typeface.BOLD); setTextColor(Color.parseColor("#222222")); setPadding(0, dp(2), 0, dp(4)) }
+        card.addView(statLine)
+        line(12.5f, "#6A1B9A").let { convLine = it.first; convName = it.second }
+        line(12.5f, "#2E7D32").let { upLine = it.first; upName = it.second }
+        line(12f, "#666666").let { recentLine = it.first; recentName = it.second }
         head = TextView(this).apply { textSize = 11.5f; setTextColor(Color.parseColor("#B71C1C")); visibility = View.GONE }
         card.addView(head)
         root.addView(card, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(10), dp(2), dp(10), dp(4)) })
@@ -125,7 +139,7 @@ class FilesActivity : Activity() {
     override fun onResume() {
         super.onResume()
         reload()
-        Thread { try { if (!RecordService.running) Tidy.sweep(this) } catch (_: Exception) {} }.start()
+        Thread { try { if (!RecordService.running) Tidy.sweep(this) else Tidy.sweepUploads(this, true) } catch (_: Exception) {} }.start()
         refresher.postDelayed(refreshTick, 10_000)
     }
 
@@ -178,18 +192,21 @@ class FilesActivity : Activity() {
         statLine.text = "녹화 파일 ${items.size}개 · 변환 대기 ${wait}개 · 업로드 대기 ${upWait}개"
         val tc = Tidy.current
         convLine.text = when {
-            tc != null && Tidy.converting && !Tidy.remuxing -> "변환 중 ${Tidy.percent}% · ${(System.currentTimeMillis() - Tidy.convStartAt) / 60000}분 · ${tc.name}"
-            tc != null -> "정리 중 ${Tidy.percent}% · ${tc.name}"
+            tc != null && Tidy.converting && !Tidy.remuxing -> "변환 중 ${Tidy.percent}% · ${(System.currentTimeMillis() - Tidy.convStartAt) / 60000}분"
+            tc != null -> "정리 중 ${Tidy.percent}%"
             else -> "변환: 쉬는 중"
         }
+        setName(convName, tc?.name ?: "")
         val uc = Uploader.current
         upLine.text = when {
             !FtpConfig.ready(this) -> "업로드: NAS 설정을 먼저 해 주세요"
-            uc != null -> "업로드 중 ${Uploader.percent}% · ${String.format("%.1f", Uploader.speed / 1048576.0)}MB/s · ${uc.name}"
+            uc != null -> "업로드 중 ${Uploader.percent}% · ${String.format("%.1f", Uploader.speed / 1048576.0)}MB/s"
             else -> "업로드: 쉬는 중"
         }
+        setName(upName, if (FtpConfig.ready(this)) uc?.name ?: "" else "")
         val last = Uploader.history(this).maxByOrNull { it.time }
-        recentLine.text = if (last != null) "최근 업로드됨 · ${last.name}" else "최근 업로드됨 · 없음"
+        recentLine.text = "최근 업로드됨"
+        setName(recentName, last?.name ?: "없음")
         if (!Codec.phoneHasHevcEncoder()) { head.visibility = View.VISIBLE; head.text = "이 폰에는 H.265 변환기가 없어 변환할 수 없어요" } else head.visibility = View.GONE
         listBox.removeAllViews()
         dayHeaders.clear()
@@ -254,14 +271,15 @@ class FilesActivity : Activity() {
                 tidyState != null -> tidyState
                 busy -> if (cur?.uri == item.uri) "변환 ${ConvertService.percent}%" else "변환 대기"
                 !isMp4 -> "대기"
-                Tidy.isTidied(this, item.name) -> if (FtpConfig.ready(this)) "업로드 대기" else "정리 완료"
+                Uploader.wasUploaded(this, item.name) -> "업로드 완료"
+                Tidy.isTidied(this, item.name) -> if (FtpConfig.ready(this)) "업로드 줄에 넣는 중" else "정리 완료"
                 else -> Tidy.pendingSweep(item.date * 1000)
             }
             val color = when {
                 actState?.startsWith("녹화 중") == true -> "#D32F2F"
                 actState != null -> "#EF6C00"
                 stateText.contains("실패") -> "#B71C1C"
-                stateText.startsWith("정리 완료") -> "#2E7D32"
+                stateText.startsWith("정리 완료") || stateText == "업로드 완료" -> "#2E7D32"
                 else -> "#1565C0"
             }
             val row = LinearLayout(this).apply {
