@@ -210,6 +210,7 @@ class FilesActivity : Activity() {
         if (!Codec.phoneHasHevcEncoder()) { head.visibility = View.VISIBLE; head.text = "이 폰에는 H.265 변환기가 없어 변환할 수 없어요" } else head.visibility = View.GONE
         listBox.removeAllViews()
         dayHeaders.clear()
+        var stuck = false
         // 내 폰에 있는 파일 + 업로드까지 끝나 폰에서는 빠진 파일(업로드 기록)을 날짜순으로 함께
         val localNames = items.map { it.name }.toHashSet()
         val active = RecordService.fileStates()
@@ -272,7 +273,8 @@ class FilesActivity : Activity() {
                 busy -> if (cur?.uri == item.uri) "변환 ${ConvertService.percent}%" else "변환 대기"
                 !isMp4 -> "대기"
                 Uploader.wasUploaded(this, item.name) -> "업로드 완료"
-                Tidy.isTidied(this, item.name) -> if (FtpConfig.ready(this)) "업로드 줄에 넣는 중" else "정리 완료"
+                Tidy.isFailed(item.name) -> "변환 실패 · 길게 눌러 선택"
+                Tidy.isTidied(this, item.name) -> if (FtpConfig.ready(this)) { stuck = true; "업로드 줄에 넣는 중" } else "정리 완료"
                 else -> Tidy.pendingSweep(item.date * 1000)
             }
             val color = when {
@@ -297,7 +299,13 @@ class FilesActivity : Activity() {
             listBox.addView(android.view.View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")) }, LinearLayout.LayoutParams(-1, 1))
         }
         fast.update()
+        // 명단에 빠진 파일이 보이면 5분 기다리지 않고 바로 넣음 (30초에 한 번까지)
+        if (stuck && System.currentTimeMillis() - lastStuckFix > 30_000) {
+            lastStuckFix = System.currentTimeMillis()
+            Thread { try { Tidy.sweepUploads(this, true) } catch (_: Exception) {} }.start()
+        }
     }
+    private var lastStuckFix = 0L
 
     private fun nameView(n: String, c: String) = TextView(this).apply {
         text = n; textSize = 14f; setTextColor(Color.parseColor(c)); maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
