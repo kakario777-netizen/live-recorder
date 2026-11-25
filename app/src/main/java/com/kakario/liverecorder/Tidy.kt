@@ -177,7 +177,7 @@ object Tidy {
         } catch (_: Exception) {}
     }
     /** 앱이 직접 다시 쓰는 단계(시간 바로잡기) 중인지 */
-    @Volatile private var remuxing = false
+    @Volatile var remuxing = false; private set
 
     /** H.264로 녹화된 파일은 정리하면서 H.265로 변환 (기본 켜짐, 충전 중일 때만) */
     /** H.265 변환 후 업로드 (설정, 기본 켜짐). 변환은 기다림 없이 바로 하고, 끝나면 곧바로 업로드 */
@@ -512,6 +512,7 @@ object Tidy {
     private fun finish(ctx: Context, job: Job, out: File, ok: Boolean, err: String) {
         ctx.getSharedPreferences("main", Context.MODE_PRIVATE).edit().remove("starts:" + job.name).apply()
         var msg: String
+        val madeOut = ok && out.length() > 0
         if (ok && out.length() > 0) {
             msg = try {
                 val before = job.path?.let { File(it).length() } ?: 0L
@@ -537,7 +538,7 @@ object Tidy {
         RecordService.addLog(msg)
         val wasConverting = converting
         transformer = null; curOut = null
-        if (wasConverting) logConv(ctx, job, ok && out.length() > 0, err)
+        if (wasConverting) logConv(ctx, job, madeOut, err)
         if (wasConverting && !ok) {
             // 변환 실패: 한 번은 줄 맨 뒤로 보내 다시, 두 번째도 실패하면 그대로(H.264) 업로드 — 붙잡고 있지 않게
             markTidied(ctx, job.name)

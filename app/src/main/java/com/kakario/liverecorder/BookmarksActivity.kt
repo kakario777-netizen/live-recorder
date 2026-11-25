@@ -57,8 +57,8 @@ class BookmarksActivity : Activity() {
         val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(14), dp(8), dp(6), dp(4)) }
         title = TextView(this).apply { textSize = 18f; setTypeface(null, Typeface.BOLD); setTextColor(Color.parseColor("#222222")) }
         top.addView(title, LinearLayout.LayoutParams(0, -2, 1f))
+        top.addView(smallBtn("감시 설정", "#D32F2F") { bulkMenu() })
         top.addView(smallBtn("+ 폴더", "#1565C0") { newFolder() })
-        top.addView(smallBtn("닫기", "#555555") { finish() })
         root.addView(top)
 
         // 폴더 줄 (옆으로 넘김)
@@ -82,20 +82,6 @@ class BookmarksActivity : Activity() {
         listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(ScrollView(this).apply { addView(listBox) }, LinearLayout.LayoutParams(-1, 0, 1f))
 
-        // 아래: 지금 페이지 추가 / 이 폴더 모두 녹화
-        val bottom = LinearLayout(this).apply { setPadding(dp(8), dp(4), dp(8), dp(4)); setBackgroundColor(Color.parseColor("#FAFAFA")) }
-        bottom.addView(Button(this).apply {
-            text = "☆ 지금 페이지 추가"; isAllCaps = false
-            setOnClickListener {
-                setResult(RESULT_OK, Intent().putExtra(EXTRA_ACTION, "add").putExtra(EXTRA_CAT, if (cur == ALL || cur == NONE) "" else cur))
-                finish()
-            }
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        bottom.addView(Button(this).apply {
-            text = "이 목록 자동 녹화…"; isAllCaps = false; setTextColor(Color.parseColor("#D32F2F"))
-            setOnClickListener { bulkMenu() }
-        }, LinearLayout.LayoutParams(0, -2, 1f))
-        root.addView(bottom)
 
         setContentView(root)
         render()
@@ -162,37 +148,26 @@ class BookmarksActivity : Activity() {
                 setOnClickListener { pick("open", listOf(b)) }
                 setOnLongClickListener { itemMenu(b); true }
             }
-            val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            texts.addView(TextView(this).apply { text = b.name; textSize = 15f; setTextColor(Color.parseColor("#222222")) })
-            texts.addView(TextView(this).apply {
-                val st = sl?.state
-                val ws = if (b.watch && sl == null) Watcher.status[b.url.trimEnd('/').lowercase()] ?: "자동 녹화 켜짐" else null
-                text = listOfNotNull(
-                    st?.let { "● $it" },
-                    ws,
-                    Names.siteName(b.url),
-                    if (cur == ALL && b.cat.isNotEmpty()) "폴더: ${b.cat}" else null,
-                    Quality.perUrl(this@BookmarksActivity, b.url).takeIf { it > 0 }?.let { Quality.label(it) }
-                ).joinToString(" · ")
-                textSize = 11f
-                setTextColor(Color.parseColor(if (st == "녹화 중") "#D32F2F" else if (st != null) "#EF6C00" else "#888888"))
-            })
-            row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
-            // 자동 녹화 켜기/끄기 (방송 켜지면 받고, 끝나면 목록에서 빠짐)
-            row.addView(TextView(this).apply {
-                // 뷰어: 이 폰은 실제로 대기하지 않음 — 녹화폰 자동 녹화를 켜고 끄는 표시 (파란색)
-                val vw = CloudBm.viewer(this@BookmarksActivity)
-                text = if (vw) (if (b.watch) "녹화폰 자동 켬" else "녹화폰 자동 끔") else (if (b.watch) "자동 켬" else "자동 끔"); textSize = 12f
-                setTextColor(if (b.watch) Color.WHITE else Color.parseColor("#555555"))
-                setPadding(dp(10), dp(5), dp(10), dp(5))
-                background = GradientDrawable().apply { setColor(Color.parseColor(if (b.watch) (if (vw) "#1E88E5" else "#D32F2F") else "#E0E0E0")); cornerRadius = dp(14).toFloat() }
-                setOnClickListener {
-                    Bookmarks.setWatch(this@BookmarksActivity, listOf(b.url), !b.watch)
-                    if (!b.watch && !vw) RecordService.startWatch(this@BookmarksActivity)
+            row.addView(TextView(this).apply { text = b.name; textSize = 15f; setTextColor(Color.parseColor("#222222")); isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END },
+                LinearLayout.LayoutParams(0, -2, 1f))
+            // 감시(자동 녹화) 토글
+            val vw = CloudBm.viewer(this@BookmarksActivity)
+            row.addView(android.widget.Switch(this).apply {
+                isChecked = b.watch
+                setOnCheckedChangeListener { _, on ->
+                    Bookmarks.setWatch(this@BookmarksActivity, listOf(b.url), on)
+                    if (on && !vw) RecordService.startWatch(this@BookmarksActivity)
                     renderList()
                 }
-            }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(6), 0, dp(4), 0) })
-            if (sl == null) row.addView(smallBtn("지금 녹화", "#1565C0") { pick("record", listOf(b)) })
+            }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(6), 0, dp(6), 0) })
+            // 맨 오른쪽: 생방 ON/OFF
+            val live = sl != null && (sl.state == "녹화 중" || sl.state == "일시정지")
+            row.addView(TextView(this).apply {
+                text = if (live) "ON" else "OFF"; textSize = 11f; setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER
+                setTextColor(if (live) Color.WHITE else Color.parseColor("#9E9E9E"))
+                setPadding(dp(8), dp(3), dp(8), dp(3))
+                background = GradientDrawable().apply { setColor(Color.parseColor(if (live) "#D32F2F" else "#EEEEEE")); cornerRadius = dp(10).toFloat() }
+            }, LinearLayout.LayoutParams(dp(44), -2).apply { setMargins(0, 0, dp(6), 0) })
             listBox.addView(row)
             listBox.addView(View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")) }, LinearLayout.LayoutParams(-1, 1))
         }

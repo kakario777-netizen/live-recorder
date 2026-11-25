@@ -129,7 +129,7 @@ class MainActivity : Activity() {
         // 둘째 줄: 즐겨찾기 · 설정 · 파일 · 녹화
         val menu = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), 0, dp(4), 0) }
         menu.addView(iconBtn(R.drawable.ic_star, "즐겨찾기") { showBookmarks() }, LinearLayout.LayoutParams(0, -2, 1f))
-        menu.addView(iconBtn(R.drawable.ic_settings, "설정") { showSettingsMenu() }, LinearLayout.LayoutParams(0, -2, 1f))
+        menu.addView(iconBtn(R.drawable.ic_star_outline, "즐겨찾기 추가") { addBookmark() }, LinearLayout.LayoutParams(0, -2, 1f))
         menu.addView(iconBtn(R.drawable.ic_folder, "파일") { innerNav = true; startActivity(Intent(this, FilesActivity::class.java)) }, LinearLayout.LayoutParams(0, -2, 1f))
         val rec = iconBtn(R.drawable.ic_rec, "녹화", Color.parseColor("#D32F2F")) { onRecord() }
         recLabel = rec.getChildAt(1) as TextView
@@ -185,10 +185,7 @@ class MainActivity : Activity() {
         val tabV = iconBtn(R.drawable.ic_tabs, "탭 1") { showTabs() }
         tabLabel = tabV.getChildAt(1) as TextView
         nav.addView(tabV, LinearLayout.LayoutParams(0, -2, 1f))
-        nav.addView(iconBtn(R.drawable.ic_share, "공유") {
-            val u = web.url ?: return@iconBtn
-            startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, u), "주소 공유"))
-        }, LinearLayout.LayoutParams(0, -2, 1f))
+        nav.addView(iconBtn(R.drawable.ic_settings, "설정") { showSettingsMenu() }, LinearLayout.LayoutParams(0, -2, 1f))
         root.addView(nav)
 
         setContentView(root)
@@ -389,6 +386,14 @@ class MainActivity : Activity() {
                 return true
             }
 
+            // 같은 사이트 안에서 화면만 바뀌는 경우(SPA): 이전 방송 영상 주소가 남아 썸네일이 옛것으로 나오지 않게 비움
+            override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
+                if (view !== web || isReload) return
+                val a = currentPage?.substringBefore('#')?.substringBefore('?')?.trimEnd('/')
+                val b = url.substringBefore('#').substringBefore('?').trimEnd('/')
+                if (a != null && a != b) { Sniff.clear(); currentPage = url; urlBox.setText(url) }
+            }
+
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                 if (view !== web) return
                 currentPage = url
@@ -518,10 +523,7 @@ class MainActivity : Activity() {
                 val l = RecordService.list()
                 val rec = l.count { it.state == "녹화 중" }
                 val wait = l.count { it.state == "방송 대기" || it.state == "순서 대기" }
-                val paused = l.count { it.state == "일시정지" }
-                val mb = l.sumOf { it.bytes } / 1024 / 1024
-                "받는 중 ${l.count { it.isDownloading }}개 · ${RecordService.rateText()} · 대기 $wait" +
-                    (if (paused > 0) " · 일시정지 $paused" else "") + " · ${RecordService.totalRate() / 1024}KB/s · ${mb}MB  ›"
+                "받는 중 ${l.count { it.isDownloading }}개 · ${RecordService.rateText()} · 대기 $wait  ›"
             }
             n > 0 || Sniff.latestSegAny() != null -> "영상 찾음 — 녹화를 누르세요"
             others > 0 -> "다른 형식 영상 주소 ${others}개 (진단 저장 후 보내 주세요)"
@@ -724,57 +726,61 @@ class MainActivity : Activity() {
         }
         box.addView(tv)
 
-        // 파일 이름: 사이트명 + 스트리머 이름 + 날짜시간 (넣을 부분 고르기, 이름은 고칠 수 있음)
+        // 파일 이름은 '파일명 수정'을 눌러 팝업에서 고름
         val guess = Names.streamerFromUrl(page).ifEmpty { Names.streamerFromTitle(web.title ?: "") }
+        var chosen = guess
         box.addView(TextView(this).apply {
-            text = "파일 이름"; textSize = 13f; setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#222222")); setPadding(0, dp(12), 0, 0)
+            text = "파일명 수정"; textSize = 14f; setTextColor(Color.parseColor("#1565C0")); setPadding(0, dp(12), 0, dp(4))
+            setOnClickListener { editName(page, chosen) { chosen = it } }
         })
+
+        val ua = web.settings.userAgentString
+        AlertDialog.Builder(this)
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton(if (Sync.isRemote(this)) "담당 폰에서 녹화" else "녹화 시작") { _, _ ->
+                requestRecord(page, ua, Names.clean(chosen))
+            }
+            .setNegativeButton("취소", null)
+            .show()
+        // 최근 20초 안에 받은 영상 조각만 미리보기에 씀 (옛 방송 썸네일 방지)
+        val seg = Sniff.latestSegAny()?.takeIf { System.currentTimeMillis() - it.time < 20_000 }
+        if (seg == null) { tv.text = "${hostOf(page)}\n방송을 재생하면 미리보기가 나와요"; return }
+        Thread {
+            val r = Preview.fromPlayer(this, Sniff.streamId(seg.url), ua)
+            runOnUiThread {
+                tv.text = "${hostOf(page)}\n" + r.text.replace(Regex("\\s*\\([^)]*\\)"), "")
+                r.bitmap?.let { img.setImageBitmap(it) }
+            }
+        }.start()
+    }
+
+    /** 파일명 팝업: 넣을 부분 체크 + 스트리머 이름 */
+    private fun editName(page: String, cur: String, done: (String) -> Unit) {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), 0) }
         val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         val cSite = android.widget.CheckBox(this).apply { text = "사이트명"; textSize = 13f; isChecked = Names.useSite(this@MainActivity) }
         val cName = android.widget.CheckBox(this).apply { text = "스트리머"; textSize = 13f; isChecked = Names.useStreamer(this@MainActivity) }
         val cTime = android.widget.CheckBox(this).apply { text = "날짜시간"; textSize = 13f; isChecked = Names.useTime(this@MainActivity) }
         row.addView(cSite); row.addView(cName); row.addView(cTime)
         box.addView(row)
-        val nameBox = EditText(this).apply {
-            hint = "스트리머 이름"
-            textSize = 14f
-            isSingleLine = true
-            setText(guess)
-        }
+        val nameBox = EditText(this).apply { hint = "스트리머 이름"; textSize = 14f; isSingleLine = true; setText(cur) }
         box.addView(nameBox)
         val preview = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#666666")) }
         box.addView(preview)
-        fun updatePreview() {
+        fun upd() {
             Names.userSetParts(this, cSite.isChecked, cName.isChecked, cTime.isChecked)
-            preview.text = "예: " + Names.build(this, page, nameBox.text.toString()) + ".mp4"
+            preview.text = Names.build(this, page, nameBox.text.toString()) + ".mp4"
         }
-        listOf(cSite, cName, cTime).forEach { it.setOnCheckedChangeListener { _, _ -> updatePreview() } }
+        listOf(cSite, cName, cTime).forEach { it.setOnCheckedChangeListener { _, _ -> upd() } }
         nameBox.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun afterTextChanged(e: android.text.Editable?) { updatePreview() }
+            override fun afterTextChanged(e: android.text.Editable?) { upd() }
         })
-        updatePreview()
-
-        val ua = web.settings.userAgentString
-        AlertDialog.Builder(this)
-            .setTitle("이 방송을 녹화할까요?")
-            .setView(ScrollView(this).apply { addView(box) })
-            .setPositiveButton(if (Sync.isRemote(this)) "담당 폰에서 녹화" else "녹화 시작") { _, _ ->
-                requestRecord(page, ua, Names.clean(nameBox.text.toString()))
-            }
-            .setNegativeButton("취소", null)
-            .show()
-        val seg = Sniff.latestSegAny()
-        if (seg == null) { tv.text = "${hostOf(page)}\n(방송을 재생하면 미리보기가 나와요 — 녹화는 그냥 시작해도 돼요)"; return }
-        Thread {
-            val r = Preview.fromPlayer(this, Sniff.streamId(seg.url), ua)
-            runOnUiThread {
-                tv.text = "${hostOf(page)}\n${r.text}"
-                r.bitmap?.let { img.setImageBitmap(it) }
-            }
-        }.start()
+        upd()
+        AlertDialog.Builder(this).setView(box)
+            .setPositiveButton("확인") { _, _ -> done(nameBox.text.toString()) }
+            .setNegativeButton("취소", null).show()
     }
 
     /** 홈: 길게 눌러 정한 페이지, 없으면 마지막으로 연 방송 사이트 첫 화면 */

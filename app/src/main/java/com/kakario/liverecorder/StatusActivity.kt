@@ -32,7 +32,7 @@ class StatusActivity : Activity() {
     private var lastWork = ""
     private val h = Handler(Looper.getMainLooper())
     private var lastIds = ""
-    private val lines = HashMap<Int, Pair<TextView, TextView>>()
+    private val lines = HashMap<Int, Pair<TextView, LinearLayout>>()
     private val sums = ArrayList<TextView>()
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -42,31 +42,25 @@ class StatusActivity : Activity() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.parseColor("#F5F6F8")) }
         root.setOnApplyWindowInsetsListener { v, ins -> v.setPadding(0, ins.systemWindowInsetTop, 0, ins.systemWindowInsetBottom); ins }
 
-        val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(10), dp(6), dp(4)) }
-        top.addView(TextView(this).apply { text = "녹화 현황"; textSize = 19f; setTypeface(null, Typeface.BOLD); setTextColor(Color.parseColor("#222222")) },
-            LinearLayout.LayoutParams(0, -2, 1f))
-        top.addView(flat("닫기", "#555555") { finish() })
-        root.addView(top)
 
-        // 요약 칸 3개
-        sumBox = LinearLayout(this).apply { setPadding(dp(10), dp(2), dp(10), dp(8)) }
-        repeat(3) {
+        // 요약 칸 2개: 받는 개수 · 실제 속도
+        sumBox = LinearLayout(this).apply { setPadding(dp(10), dp(10), dp(10), dp(8)) }
+        repeat(2) {
             val c = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
                 setPadding(dp(6), dp(10), dp(6), dp(10))
                 background = GradientDrawable().apply { setColor(Color.WHITE); cornerRadius = dp(12).toFloat() }
             }
             val big = TextView(this).apply { textSize = 18f; setTypeface(null, Typeface.BOLD); setTextColor(Color.parseColor("#222222")); gravity = Gravity.CENTER }
-            val small = TextView(this).apply { textSize = 11f; setTextColor(Color.parseColor("#777777")); gravity = Gravity.CENTER }
-            c.addView(big); c.addView(small)
-            sums.add(big); sums.add(small)
+            c.addView(big)
+            sums.add(big)
             sumBox.addView(c, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(4), 0, dp(4), 0) })
         }
         root.addView(sumBox)
 
         listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), dp(12)) }
         workBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, dp(12), 0) }
-        root.addView(ScrollView(this).apply { addView(LinearLayout(this@StatusActivity).apply { orientation = LinearLayout.VERTICAL; addView(workBox); addView(listBox) }) }, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(ScrollView(this).apply { addView(LinearLayout(this@StatusActivity).apply { orientation = LinearLayout.VERTICAL; addView(listBox) }) }, LinearLayout.LayoutParams(-1, 0, 1f))
 
         val bottom = LinearLayout(this).apply { setPadding(dp(8), dp(4), dp(8), dp(4)); setBackgroundColor(Color.WHITE) }
         bottom.addView(Button(this).apply {
@@ -101,17 +95,15 @@ class StatusActivity : Activity() {
 
     private fun update() {
         val l = RecordService.list().filter { it.group() < 4 }
-        sums[0].text = "${l.count { it.isDownloading }}개"; sums[1].text = "받는 중"
-        sums[2].text = RecordService.rateText().substringBefore('/') + "MB/s"; sums[3].text = "속도 (한도 ${RecordService.rateText().substringAfter('/')})"
-        sums[4].text = "${l.sumOf { it.bytes } / 1024 / 1024}MB"; sums[5].text = "합계 · 등록 ${l.size}개"
+        sums[0].text = "다운로드 ${l.count { it.isDownloading }}개"
+        sums[1].text = RecordService.rateText().substringBefore('/') + "MB/s"
         val ids = l.sortedWith(compareBy({ it.group() }, { it.id })).joinToString(",") { "${it.id}:${it.group()}" }
         if (ids != lastIds) { lastIds = ids; build(l) }
-        val w = CloudBm.workJson(this); val ws = w.toString()
-        if (ws != lastWork) { lastWork = ws; CloudBm.fillWork(workBox, w) }
         l.forEach { sl ->
             lines[sl.id]?.let { (name, info) ->
                 name.text = sl.streamer.ifEmpty { sl.host }
-                info.text = sl.detail()
+                val parts = sl.detail().split("  ·  ").filter { it.isNotBlank() }
+                if (info.tag != parts) { info.tag = parts; fillChips(info, parts) }
             }
         }
     }
@@ -151,7 +143,7 @@ class StatusActivity : Activity() {
                 }, LinearLayout.LayoutParams(dp(8), dp(8)).apply { setMargins(0, 0, dp(10), 0) })
                 val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
                 val name = TextView(this).apply { textSize = if (compact) 14f else 16f; setTextColor(Color.parseColor("#222222")); setTypeface(null, if (compact) Typeface.NORMAL else Typeface.BOLD); isSingleLine = true }
-                val info = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#666666")) }
+                val info = LinearLayout(this).apply { setPadding(0, dp(4), 0, 0) }
                 texts.addView(name)
                 if (!compact) texts.addView(info)
                 row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
@@ -173,6 +165,20 @@ class StatusActivity : Activity() {
             if (compact) listBox.addView(TextView(this).apply {
                 text = "누르면 방송 페이지로 · 길게 누르면 지금 바로 다시 확인"; textSize = 11f; setTextColor(Color.parseColor("#999999")); setPadding(dp(6), dp(4), 0, 0)
             })
+        }
+    }
+
+    /** 상세 정보를 항목마다 작은 칸으로 나눠 보여 줌 */
+    private fun fillChips(box: LinearLayout, parts: List<String>) {
+        box.removeAllViews()
+        parts.forEach { p ->
+            val warn = p.contains("!")
+            box.addView(TextView(this).apply {
+                text = p; textSize = 11.5f; isSingleLine = true
+                setTextColor(Color.parseColor(if (warn) "#C62828" else "#455A64"))
+                setPadding(dp(7), dp(2), dp(7), dp(2))
+                background = GradientDrawable().apply { setColor(Color.parseColor(if (warn) "#FFEBEE" else "#ECEFF1")); cornerRadius = dp(6).toFloat() }
+            }, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, 0, dp(5), 0) })
         }
     }
 

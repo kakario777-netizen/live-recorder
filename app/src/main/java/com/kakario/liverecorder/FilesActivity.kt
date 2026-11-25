@@ -29,6 +29,10 @@ class FilesActivity : Activity() {
     private val dayHeaders = ArrayList<Pair<android.view.View, String>>()
     private lateinit var head: TextView
     private lateinit var holdBtn: Button
+    private lateinit var statLine: TextView
+    private lateinit var convLine: TextView
+    private lateinit var upLine: TextView
+    private lateinit var recentLine: TextView
 
     /** 보류함 + 빠진 파일 → 되돌려 다시 정리 */
     private fun showHold() {
@@ -57,44 +61,46 @@ class FilesActivity : Activity() {
         super.onCreate(savedInstanceState)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE) }
 
-        val bar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(12), dp(8), dp(6), dp(4)) }
-        bar.addView(TextView(this).apply {
-            text = "녹화 파일"; textSize = 18f; setTypeface(null, Typeface.BOLD); setTextColor(Color.BLACK)
+        // 맨 위: 변환 설정(체크) · NAS 설정 · 휴지통 아이콘
+        val bar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), dp(6), dp(4), 0) }
+        bar.addView(CheckBox(this).apply {
+            text = "H.264 녹화는 H.265로 변환 후 업로드"; textSize = 13f
+            isChecked = Tidy.autoH265(this@FilesActivity)
+            setOnCheckedChangeListener { _, b -> prefs.edit().putBoolean("autoH265", b).apply() }
         }, LinearLayout.LayoutParams(0, -2, 1f))
         bar.addView(Button(this).apply {
-            text = "NAS 업로드 설정"; isAllCaps = false; textSize = 13f
+            text = "NAS 설정"; isAllCaps = false; textSize = 13f; minWidth = 0; minimumWidth = 0
             setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#1565C0"))
             setOnClickListener { ftpSettings() }
         })
-        bar.addView(Button(this).apply {
-            text = "휴지통"; isAllCaps = false; textSize = 13f
-            setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#555555"))
-            setOnClickListener { showTrash() }
+        bar.addView(android.widget.ImageButton(this).apply {
+            setImageResource(android.R.drawable.ic_menu_delete); setBackgroundColor(Color.TRANSPARENT)
+            contentDescription = "휴지통"; setOnClickListener { showTrash() }
         })
         root.addView(bar)
-        root.addView(Button(this).apply {
-            text = "H.265 변환 필요한 것 모두"; isAllCaps = false; textSize = 13f
-            setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#D32F2F"))
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            setOnClickListener { convertAll() }
-        })
 
-        root.addView(CheckBox(this).apply {
-            text = "H.264 녹화는 H.265로 변환 후 업로드 (기다림 없이 바로 변환 → 끝나면 바로 업로드. 꺼 두면 정리만 하고 업로드)"
-            textSize = 13f
-            isChecked = Tidy.autoH265(this@FilesActivity)
-            setPadding(dp(4), 0, 0, 0)
-            setOnCheckedChangeListener { _, b -> prefs.edit().putBoolean("autoH265", b).apply() }
-        }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) })
-
-        head = TextView(this).apply { textSize = 12f; setTextColor(Color.parseColor("#666666")); setPadding(dp(14), dp(2), dp(14), dp(6)) }
-        root.addView(head)
+        // 현황 카드: 숫자 줄 / 변환 중 / 업로드 중 / 최근 업로드 (파일명은 한 줄로 흐르게)
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = android.graphics.drawable.GradientDrawable().apply { setColor(Color.parseColor("#F5F6F8")); cornerRadius = dp(10).toFloat() }
+        }
+        fun line(sz: Float, color: String) = TextView(this).apply {
+            textSize = sz; setTextColor(Color.parseColor(color)); isSingleLine = true
+            ellipsize = android.text.TextUtils.TruncateAt.MARQUEE; marqueeRepeatLimit = -1; isSelected = true
+            setPadding(0, dp(2), 0, dp(2))
+        }
+        statLine = line(13f, "#222222").apply { setTypeface(null, Typeface.BOLD) }
+        convLine = line(12.5f, "#6A1B9A"); upLine = line(12.5f, "#2E7D32"); recentLine = line(12f, "#666666")
+        card.addView(statLine); card.addView(convLine); card.addView(upLine); card.addView(recentLine)
+        head = TextView(this).apply { textSize = 11.5f; setTextColor(Color.parseColor("#B71C1C")); visibility = View.GONE }
+        card.addView(head)
+        root.addView(card, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(10), dp(2), dp(10), dp(4)) })
         // 보류함·빠진 파일: 다 끝나면 다시 정리
         holdBtn = Button(this).apply {
             isAllCaps = false; textSize = 13f
             setOnClickListener { showHold() }
         }
-        root.addView(holdBtn, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(12), 0, dp(12), dp(4)) })
+        root.addView(holdBtn, LinearLayout.LayoutParams(-1, -2).apply { setMargins(dp(10), 0, dp(10), dp(4)) })
 
         listBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll = ScrollView(this).apply { addView(listBox); isVerticalScrollBarEnabled = false }
@@ -167,26 +173,24 @@ class FilesActivity : Activity() {
         holdBtn.visibility = if (nh + nm > 0) View.VISIBLE else View.GONE
         val idle = Tidy.current == null && Tidy.queuedNames().isEmpty() && Uploader.current == null
         holdBtn.text = (if (idle) "다 끝났어요 → " else "") + "보류함 ${nh}개 · 빠진 파일 ${nm}개 · 다시 정리"
-        head.text = buildString {
-            append("내 파일 > ${Saver.FOLDER} · ${items.size}개")
-            if (!Codec.phoneHasHevcEncoder()) append("\n이 폰에는 H.265 인코더가 없어 변환할 수 없어요")
-            // 지금 하는 일: 변환 → 업로드 (정리는 금방 끝나서 따로 안 보여 줌)
-            val tc = Tidy.current
-            if (tc != null && Tidy.converting) append("\n▶ 변환 중 ${Tidy.percent}% · ${(System.currentTimeMillis() - Tidy.convStartAt) / 60000}분째 · ${tc.name}")
-            else if (tc != null) append("\n▶ 업로드 준비 중 · ${tc.name}")
-            val wait = Tidy.queuedNames().size
-            if (wait > 0) append("\n   변환 대기 ${wait}개 (" + (if (wait >= Tidy.MANY) "${Tidy.MANY}개 넘게 밀려서 짧은 영상부터" else "오래된 것부터") + ")")
-            if (FtpConfig.ready(this@FilesActivity)) {
-                val uc = Uploader.current
-                if (uc != null) append("\n▶ 업로드 중 ${Uploader.percent}% · ${String.format("%.1f", Uploader.speed / 1048576.0)}MB/s · ${uc.name}")
-                else append("\n▶ 업로드: 지금 올리는 것 없음")
-                append("\n   업로드 대기 ${Uploader.pendingCount(this@FilesActivity) - (if (uc != null) 1 else 0)}개")
-                if (Uploader.lastResult.isNotBlank()) append("\n최근: ${Uploader.lastResult}")
-            } else append("\nNAS 자동 업로드 꺼짐 (NAS 설정을 먼저 해 주세요)")
-            append(" · 휴지통 ${Uploader.trashFiles().size}개 (${Uploader.trashLabel(this@FilesActivity)} 뒤 자동 삭제)")
-            if (cur != null) append("\n변환 중: ${cur.name} ${ConvertService.percent}%")
-            else if (ConvertService.lastResult.isNotBlank()) append("\n최근: ${ConvertService.lastResult}")
+        val wait = Tidy.queuedNames().size
+        val upWait = if (FtpConfig.ready(this)) (Uploader.pendingCount(this) - (if (Uploader.current != null) 1 else 0)).coerceAtLeast(0) else 0
+        statLine.text = "녹화 파일 ${items.size}개 · 변환 대기 ${wait}개 · 업로드 대기 ${upWait}개"
+        val tc = Tidy.current
+        convLine.text = when {
+            tc != null && Tidy.converting && !Tidy.remuxing -> "변환 중 ${Tidy.percent}% · ${(System.currentTimeMillis() - Tidy.convStartAt) / 60000}분 · ${tc.name}"
+            tc != null -> "정리 중 ${Tidy.percent}% · ${tc.name}"
+            else -> "변환: 쉬는 중"
         }
+        val uc = Uploader.current
+        upLine.text = when {
+            !FtpConfig.ready(this) -> "업로드: NAS 설정을 먼저 해 주세요"
+            uc != null -> "업로드 중 ${Uploader.percent}% · ${String.format("%.1f", Uploader.speed / 1048576.0)}MB/s · ${uc.name}"
+            else -> "업로드: 쉬는 중"
+        }
+        val last = Uploader.history(this).maxByOrNull { it.time }
+        recentLine.text = if (last != null) "최근 업로드됨 · ${last.name}" else "최근 업로드됨 · 없음"
+        if (!Codec.phoneHasHevcEncoder()) { head.visibility = View.VISIBLE; head.text = "이 폰에는 H.265 변환기가 없어 변환할 수 없어요" } else head.visibility = View.GONE
         listBox.removeAllViews()
         dayHeaders.clear()
         // 내 폰에 있는 파일 + 업로드까지 끝나 폰에서는 빠진 파일(업로드 기록)을 날짜순으로 함께
@@ -231,135 +235,86 @@ class FilesActivity : Activity() {
                     }
                 }
                 val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                texts.addView(TextView(this).apply { text = hist.name; textSize = 14f; setTextColor(Color.parseColor("#555555")) })
-                texts.addView(TextView(this).apply {
-                    text = "${fmt.format(Date(hist.time))} 업로드 · ${hist.size / 1024 / 1024}MB · NAS ${hist.dir}"
-                    textSize = 12f; setTextColor(Color.parseColor("#888888"))
-                })
+                texts.addView(nameView(hist.name, "#555555"))
+                texts.addView(subView("${fmt.format(Date(hist.time))} · ${hist.size / 1024 / 1024}MB"))
                 row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
-                row.addView(TextView(this).apply {
-                    text = "업로드 완료"; textSize = 13f; setTextColor(Color.parseColor("#2E7D32")); setPadding(dp(8), 0, dp(8), 0)
-                })
+                row.addView(stateView("업로드됨", "#2E7D32"))
                 listBox.addView(row)
                 listBox.addView(android.view.View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")) }, LinearLayout.LayoutParams(-1, 1))
                 return@forEach
             }
             val item = e.local!!
+            val mime = codecOf(item)
+            val actState = active[item.name]
+            val tidyState = Tidy.statusOf(item.name) ?: Uploader.statusOf(item.name)
+            val isMp4 = item.name.lowercase().endsWith(".mp4")
+            val busy = ConvertService.isBusy(item.uri)
+            val stateText = when {
+                actState != null -> actState
+                tidyState != null -> tidyState
+                busy -> if (cur?.uri == item.uri) "변환 ${ConvertService.percent}%" else "변환 대기"
+                !isMp4 -> "대기"
+                Tidy.isTidied(this, item.name) -> if (FtpConfig.ready(this)) "업로드 대기" else "정리 완료"
+                else -> Tidy.pendingSweep(item.date * 1000)
+            }
+            val color = when {
+                actState?.startsWith("녹화 중") == true -> "#D32F2F"
+                actState != null -> "#EF6C00"
+                stateText.contains("실패") -> "#B71C1C"
+                stateText.startsWith("정리 완료") -> "#2E7D32"
+                else -> "#1565C0"
+            }
             val row = LinearLayout(this).apply {
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(14), dp(10), dp(8), dp(10))
                 setOnClickListener { play(item) }
-                setOnLongClickListener { askDelete(item); true }
-            }
-            val mime = codecOf(item)
-            val codecText = when (mime) {
-                null -> "코덱 확인 중…"
-                "?" -> "코덱 알 수 없음"
-                else -> Codec.label(mime)
+                setOnLongClickListener { rowMenu(item, mime, tidyState, actState != null); true }
             }
             val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            texts.addView(TextView(this).apply { text = item.name; textSize = 14f; setTextColor(Color.BLACK) })
-            texts.addView(TextView(this).apply {
-                text = "${fmt.format(Date(item.date * 1000))} · ${item.size / 1024 / 1024}MB · $codecText"
-                textSize = 12f
-                setTextColor(if (Codec.isEfficient(mime)) Color.parseColor("#2E7D32") else Color.parseColor("#777777"))
-            })
+            texts.addView(nameView(item.name, "#000000"))
+            texts.addView(subView("${fmt.format(Date(item.date * 1000))} · ${item.size / 1024 / 1024}MB"))
             row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
-
-            // 녹화 중 / 정리 중… N% / 정리 대기 / 정리 버튼
-            val actState = active[item.name]
-            val recording = actState != null
-            val tidyState = Tidy.statusOf(item.name) ?: Uploader.statusOf(item.name)
-            // 모든 파일에 지금 상태를 글로 보여 줌
-            val isMp4 = item.name.lowercase().endsWith(".mp4")
-            val stateText = when {
-                actState != null -> actState
-                tidyState != null -> tidyState
-                !isMp4 -> null
-                Tidy.isTidied(this, item.name) -> if (FtpConfig.ready(this)) "정리 완료 · 업로드 안 됨" else "정리 완료 (업로드 꺼짐)"
-                else -> Tidy.pendingSweep(item.date * 1000)
-            }
-            if (stateText != null) texts.addView(TextView(this).apply {
-                text = stateText; textSize = 12f; setTypeface(null, Typeface.BOLD)
-                setTextColor(Color.parseColor(when {
-                    actState?.startsWith("녹화 중") == true -> "#D32F2F"
-                    actState != null -> "#EF6C00"
-                    stateText.startsWith("변환 실패") || stateText.startsWith("업로드 실패") -> "#B71C1C"
-                    stateText.startsWith("정리 완료") -> "#2E7D32"
-                    else -> "#1565C0"
-                }))
-            })
-            if (recording || tidyState != null) {
-                if (tidyState?.startsWith("충전 대기") == true) {
-                    row.addView(Button(this).apply {
-                        text = "지금 변환"; isAllCaps = false; textSize = 13f
-                        setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#D32F2F"))
-                        setOnClickListener { Tidy.forceNow(this@FilesActivity, item.name); render() }
-                    })
-                }
-                if (tidyState?.startsWith("변환 실패") == true) {
-                    row.addView(Button(this).apply {
-                        text = "다시 시도"; isAllCaps = false; textSize = 13f
-                        setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#1565C0"))
-                        setOnClickListener { Tidy.retry(this@FilesActivity, item.name); render() }
-                    })
-                    if (FtpConfig.ready(this)) row.addView(Button(this).apply {
-                        text = "그대로 업로드"; isAllCaps = false; textSize = 13f
-                        setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#D32F2F"))
-                        setOnClickListener {
-                            android.app.AlertDialog.Builder(this@FilesActivity)
-                                .setMessage("H.265로 바꾸지 않고 H.264 그대로 올릴까요?\n(용량이 큽니다)")
-                                .setPositiveButton("올리기") { _, _ -> Tidy.uploadAsIs(this@FilesActivity, item.name); render() }
-                                .setNegativeButton("취소", null).show()
-                        }
-                    })
-                }
-                listBox.addView(row)
-                listBox.addView(android.view.View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")) }, LinearLayout.LayoutParams(-1, 1))
-                return@forEach
-            }
-            if (FtpConfig.ready(this) && (Tidy.isTidied(this, item.name) || !item.name.lowercase().endsWith(".mp4"))) {
-                row.addView(Button(this).apply {
-                    isAllCaps = false; textSize = 13f
-                    setBackgroundColor(Color.TRANSPARENT)
-                    text = "업로드"
-                    setTextColor(Color.parseColor("#2E7D32"))
-                    setOnClickListener {
-                        val p = Tidy.pathFor(item.name)
-                        if (p == null) Toast.makeText(this@FilesActivity, "이 파일은 직접 경로를 찾을 수 없어 올릴 수 없어요", Toast.LENGTH_SHORT).show()
-                        else { RecordService.uploadOne(this@FilesActivity, item.name, p, guessStreamer(item.name)); render() }
-                    }
-                })
-            }
-            if (item.name.lowercase().endsWith(".mp4") && !Tidy.isTidied(this, item.name)) {
-                row.addView(Button(this).apply {
-                    isAllCaps = false; textSize = 13f
-                    setBackgroundColor(Color.TRANSPARENT)
-                    text = "정리"
-                    setTextColor(Color.parseColor("#1565C0"))
-                    setOnClickListener { RecordService.tidy(this@FilesActivity, item.name, item.uri); render() }
-                })
-            }
-
-            val busy = ConvertService.isBusy(item.uri)
-            if (busy || (mime != null && mime != "?" && !Codec.isEfficient(mime))) {
-                row.addView(Button(this).apply {
-                    isAllCaps = false; textSize = 13f
-                    setBackgroundColor(Color.TRANSPARENT)
-                    if (busy) {
-                        text = if (cur?.uri == item.uri) "${ConvertService.percent}%" else "대기"
-                        isEnabled = false
-                    } else {
-                        text = "H.265 변환"
-                        setTextColor(Color.parseColor("#D32F2F"))
-                        setOnClickListener { convert(listOf(item)) }
-                    }
-                })
-            }
+            row.addView(stateView(stateText.substringBefore(" ("), color))
             listBox.addView(row)
             listBox.addView(android.view.View(this).apply { setBackgroundColor(Color.parseColor("#EEEEEE")) }, LinearLayout.LayoutParams(-1, 1))
         }
         fast.update()
+    }
+
+    private fun nameView(n: String, c: String) = TextView(this).apply {
+        text = n; textSize = 14f; setTextColor(Color.parseColor(c)); maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+    }
+    private fun subView(t: String) = TextView(this).apply { text = t; textSize = 12f; setTextColor(Color.parseColor("#888888")); setPadding(0, dp(2), 0, 0) }
+    private fun stateView(t: String, c: String) = TextView(this).apply {
+        text = t; textSize = 12.5f; setTypeface(null, Typeface.BOLD); setTextColor(Color.parseColor(c))
+        gravity = Gravity.END; maxLines = 2; maxWidth = dp(110); setPadding(dp(8), 0, dp(6), 0)
+    }
+
+    /** 길게 누르면: 상황에 맞는 작업만 모아서 */
+    private fun rowMenu(item: Library.Item, mime: String?, tidyState: String?, recording: Boolean) {
+        val acts = ArrayList<Pair<String, () -> Unit>>()
+        if (!recording) {
+            if (tidyState?.startsWith("충전 대기") == true) acts += "지금 변환" to { Tidy.forceNow(this, item.name) }
+            if (tidyState?.startsWith("변환 실패") == true) {
+                acts += "다시 시도" to { Tidy.retry(this, item.name) }
+                if (FtpConfig.ready(this)) acts += "H.264 그대로 업로드" to { Tidy.uploadAsIs(this, item.name) }
+            }
+            if (tidyState == null) {
+                val mp4 = item.name.lowercase().endsWith(".mp4")
+                if (FtpConfig.ready(this) && (!mp4 || Tidy.isTidied(this, item.name))) acts += "지금 업로드" to {
+                    val p = Tidy.pathFor(item.name)
+                    if (p == null) Toast.makeText(this, "이 파일은 경로를 찾을 수 없어 올릴 수 없어요", Toast.LENGTH_SHORT).show()
+                    else RecordService.uploadOne(this, item.name, p, guessStreamer(item.name))
+                }
+                if (mp4 && !Tidy.isTidied(this, item.name)) acts += "지금 정리" to { RecordService.tidy(this, item.name, item.uri) }
+                if (mime != null && mime != "?" && !Codec.isEfficient(mime) && !ConvertService.isBusy(item.uri)) acts += "H.265 변환" to { convert(listOf(item)) }
+            }
+        }
+        acts += "재생" to { play(item) }
+        acts += "삭제" to { askDelete(item) }
+        AlertDialog.Builder(this).setTitle(item.name)
+            .setItems(acts.map { it.first }.toTypedArray()) { _, i -> acts[i].second(); render() }
+            .show()
     }
 
     private class Entry(val time: Long, val local: Library.Item?, val hist: Uploader.Hist?)
