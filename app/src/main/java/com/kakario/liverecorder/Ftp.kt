@@ -173,11 +173,57 @@ object Uploader {
         p.edit().putStringSet("missingNames", (p.getStringSet("missingNames", emptySet()) ?: emptySet()) + name).apply()
     }
 
+    /** NAS 폴더: 스트리머 폴더, 티켓방 흐린 영상은 그 안 '티켓방' 폴더 */
+    const val TICKET_DIR = "티켓방"
+    fun isTicket(name: String) = name.contains("(티켓방 흐림)") || name.contains("blurred", true)
+    fun folderFor(job: Job): String {
+        val s = Names.clean(job.streamer).ifEmpty { Names.streamerFromFileName(job.name) }.ifEmpty { "기타" }
+        return if (isTicket(job.name)) "$s/$TICKET_DIR" else s
+    }
+
+    /** 업데이트 후 딱 한 번(1번 녹화폰만): 이미 올라간 티켓방 흐린 영상을 각 스트리머 폴더의 '티켓방' 폴더로 옮김 */
+    @Volatile private var ticketMoveRunning = false
+    private fun ticketMoveOnce(app: Context) {
+        val p = app.getSharedPreferences("main", Context.MODE_PRIVATE)
+        if (p.getBoolean("ticketMoveDone", false) || ticketMoveRunning || !CloudBm.primary(app)) return
+        ticketMoveRunning = true
+        Thread({
+            var moved = 0; var failed = 0
+            try {
+                val f = connect(app)
+                try {
+                    val base = FtpConfig.folder(app).trimEnd('/')
+                    val dirs = (f.listDirectories(base.ifEmpty { "/" }) ?: emptyArray()).map { it.name.substringAfterLast('/') }
+                        .filter { it.isNotEmpty() && it != "." && it != ".." && !it.startsWith("#") && !it.startsWith("@") }
+                    for (d in dirs) {
+                        val dir = "$base/$d"
+                        val files = (f.listFiles(dir) ?: emptyArray()).filter { it.isFile && isTicket(it.name) && !it.name.endsWith(".part") }
+                        if (files.isEmpty()) continue
+                        val to = "$dir/$TICKET_DIR"
+                        mkdirs(f, to)
+                        for (x in files) {
+                            val n = x.name.substringAfterLast('/')
+                            if (f.rename("$dir/$n", "$to/$n")) moved++ else failed++
+                        }
+                    }
+                } finally {
+                    try { f.logout() } catch (_: Exception) {}
+                    try { f.disconnect() } catch (_: Exception) {}
+                }
+                if (failed == 0) p.edit().putBoolean("ticketMoveDone", true).apply()
+                RecordService.addLog("NAS 정리: 티켓방 흐린 영상 ${moved}개를 각 스트리머의 '티켓방' 폴더로 옮김" + (if (failed > 0) " (실패 ${failed}개, 다음에 다시)" else ""))
+            } catch (e: Exception) {
+                RecordService.addLog("NAS 티켓방 정리 못 함(다음에 다시): ${e.message}")
+            } finally { ticketMoveRunning = false }
+        }, "ftp-ticket-move").start()
+    }
+
     fun kick(ctx: Context) {
         val app = ctx.applicationContext
         appCtx = app
         load(app)
         if (!FtpConfig.ready(app)) return
+        ticketMoveOnce(app)
         synchronized(this) {
             if (worker?.isAlive == true) return
             worker = Thread({ loop(app) }, "ftp-upload").also { it.start() }
@@ -191,7 +237,7 @@ object Uploader {
         val p = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
         synchronized(this) {
             val a = try { org.json.JSONArray(p.getString("uploadHistory", "[]")) } catch (e: Exception) { org.json.JSONArray() }
-            val folderName = Names.clean(job.streamer).ifEmpty { Names.streamerFromFileName(job.name) }.ifEmpty { "기타" }
+            val folderName = folderFor(job)
             val size = try { File(job.path).takeIf { it.exists() }?.length() ?: File(trashDir(), File(job.path).name).length() } catch (e: Exception) { 0L }
             a.put(JSONObject().put("name", job.name).put("size", size).put("time", System.currentTimeMillis())
                 .put("dir", FtpConfig.folder(ctx).trimEnd('/') + "/" + folderName))
@@ -360,7 +406,7 @@ object Uploader {
             ?: run { job.tries = 99; addMissing(ctx, job.name); throw Exception("파일이 없어요 → 우선 넘어감 (다 끝나면 '다시 정리'로 다시 찾음)") }
         val total = src.length()
         // 스트리머 정보가 빠진 채 들어온 파일(직접 정리·직접 변환 등)은 파일 이름에서 꺼냄
-        val folderName = Names.clean(job.streamer).ifEmpty { Names.streamerFromFileName(job.name) }.ifEmpty { "기타" }
+        val folderName = folderFor(job)
         val dir = FtpConfig.folder(ctx).trimEnd('/') + "/" + folderName
         val finalPath = "$dir/${job.name}"
         val partPath = "$finalPath.part"
