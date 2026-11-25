@@ -56,8 +56,9 @@ object Direct {
             dec.configure(inF, surface, null, 0)
             dec.start()
 
-            mux = MediaMuxer(out.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            if (rot != 0) mux.setOrientationHint(rot)
+            val mx = MediaMuxer(out.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            mux = mx
+            if (rot != 0) mx.setOrientationHint(rot)
             var muxV = -1; var muxA = -1
             val aBuf = ByteBuffer.allocate(1024 * 1024); val aInfo = MediaCodec.BufferInfo()
             var aDone = aF == null
@@ -76,7 +77,7 @@ object Direct {
                         aPending = true
                     }
                     if (aInfo.presentationTimeUs > upToUs) return
-                    mux.writeSampleData(muxA, aBuf, aInfo)
+                    mx.writeSampleData(muxA, aBuf, aInfo)
                     aPending = false
                 }
             }
@@ -118,9 +119,9 @@ object Direct {
                     val eo = enc.dequeueOutputBuffer(eInfo, if (decDone) 10_000 else 0)
                     if (eo == MediaCodec.INFO_TRY_AGAIN_LATER) break
                     if (eo == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        muxV = mux.addTrack(enc.outputFormat)
-                        if (aF != null) muxA = mux.addTrack(aF)
-                        mux.start(); muxStarted = true
+                        muxV = mx.addTrack(enc.outputFormat)
+                        if (aF != null) muxA = mx.addTrack(aF)
+                        mx.start(); muxStarted = true
                         continue
                     }
                     if (eo < 0) continue
@@ -128,7 +129,7 @@ object Direct {
                     if (eInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) eInfo.size = 0
                     if (eInfo.size > 0 && muxStarted) {
                         writeAudio(eInfo.presentationTimeUs)
-                        mux.writeSampleData(muxV, eb, eInfo)
+                        mx.writeSampleData(muxV, eb, eInfo)
                         encFrames++
                         if (durUs > 0) {
                             val p = (eInfo.presentationTimeUs * 100 / durUs).toInt().coerceIn(0, 99)
@@ -143,8 +144,8 @@ object Direct {
             writeAudio(Long.MAX_VALUE)
             // 장면이 빠졌으면(인코더가 못 받아 버림) 실패로 보고 기존 방식으로
             if (decFrames > 0 && encFrames < decFrames * 97 / 100) return "장면 빠짐(${encFrames}/$decFrames)"
-            mux.stop(); muxStarted = false
-            mux.release(); mux = null
+            mx.stop(); muxStarted = false
+            mx.release(); mux = null
             progress(100)
             return verify(src, out)
         } catch (e: Exception) {
