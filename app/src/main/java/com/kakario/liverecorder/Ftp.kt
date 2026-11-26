@@ -100,7 +100,7 @@ object Uploader {
         File(this, ".nomedia").let { if (!it.exists()) try { it.createNewFile() } catch (_: Exception) {} }
     }
 
-    fun busy(): Boolean = current != null || synchronized(queue) { queue.isNotEmpty() }
+    fun busy(): Boolean = current != null || synchronized(queue) { queue.isNotEmpty() } || Encoder.active
     /** 올리는 것 말고 바로 다음에 올릴 게 이미 기다리고 있음 (실패해서 몇 분 뒤 다시 하는 건 빼고) */
     fun busyNow(): Boolean = synchronized(queue) { queue.any { it.tries == 0 } }
     fun queuedNames(): List<String> = synchronized(queue) { queue.sortedBy { Tidy.timeKey(it.name) }.map { it.name + if (it.tries > 0) " (실패 ${it.tries}번, 다시 대기)" else "" } }
@@ -145,6 +145,7 @@ object Uploader {
     fun enqueue(ctx: Context, name: String, path: String?, streamer: String, allowH264: Boolean = false) {
         if (path == null || !FtpConfig.ready(ctx) || BuildConfig.LAB) return
         // H.264는 변환 후에만 올림 (변환 설정이 켜져 있을 때). 변환 실패 파일은 다시 넣지 않음
+        val allowH264 = allowH264 || isOffload(ctx, name)
         if (!allowH264 && Tidy.autoH265(ctx) && Tidy.isFailed(name)) { RecordService.addLog("변환 실패 파일이라 업로드하지 않음 (파일 목록에서 직접 선택 가능): $name"); return }
         if (!allowH264 && Tidy.autoH265(ctx) && Codec.phoneHasHevcEncoder() && name.lowercase().endsWith(".mp4") &&
             Codec.probeUri(ctx, android.net.Uri.fromFile(File(path))) == android.media.MediaFormat.MIMETYPE_VIDEO_AVC) {
@@ -181,7 +182,19 @@ object Uploader {
     fun folderFor(job: Job, hasSub: Boolean = false): String {
         if (job.folder.isNotEmpty()) return job.folder
         val s = Names.clean(job.streamer).ifEmpty { Names.streamerFromFileName(job.name) }.ifEmpty { "기타" }
-        return when { isTicket(job.name) -> "$s/$TICKET_DIR"; hasSub -> "$s/$SUB_DIR"; else -> s }
+        val d = when { isTicket(job.name) -> "$s/$TICKET_DIR"; hasSub -> "$s/$SUB_DIR"; else -> s }
+        // 인코딩폰에 넘기는 큰 원본: '_변환대기' 아래 같은 폴더 구조로 (인코딩폰이 변환해서 원래 자리로 옮김)
+        return if (appCtx?.let { isOffload(it, job.name) } == true) "${Encoder.DIR}/$d" else d
+    }
+
+    /** 녹화폰이 변환하지 않고 인코딩폰에 넘기기로 한 파일 */
+    fun isOffload(ctx: Context, name: String) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getStringSet("offloadNames", emptySet())!!.contains(name)
+    fun markOffload(ctx: Context, name: String) {
+        val p = ctx.getSharedPreferences("main", Context.MODE_PRIVATE)
+        val set = (p.getStringSet("offloadNames", emptySet()) ?: emptySet()).toMutableSet()
+        set.add(name)
+        if (set.size > 2000) set.remove(set.first())
+        p.edit().putStringSet("offloadNames", set).apply()
     }
 
     /** 업데이트 후 딱 한 번(1번 녹화폰만) NAS 정리:
@@ -200,7 +213,7 @@ object Uploader {
                 try {
                     val base = FtpConfig.folder(app).trimEnd('/')
                     val dirs = (f.listDirectories(base.ifEmpty { "/" }) ?: emptyArray()).map { it.name.substringAfterLast('/') }
-                        .filter { it.isNotEmpty() && it != "." && it != ".." && !it.startsWith("#") && !it.startsWith("@") }
+                        .filter { it.isNotEmpty() && it != "." && it != ".." && !it.startsWith("#") && !it.startsWith("@") && !it.startsWith("_") }
                     fun move(from: String, toDir: String, n: String): Boolean { mkdirs(f, toDir); return f.rename("$from/$n", "$toDir/$n") }
                     for (d in dirs) {
                         val dir = "$base/$d"
@@ -240,6 +253,7 @@ object Uploader {
         load(app)
         if (!FtpConfig.ready(app)) return
         nasReorgOnce(app)
+        Encoder.start(app)
         synchronized(this) {
             if (worker?.isAlive == true) return
             worker = Thread({ loop(app) }, "ftp-upload").also { it.start() }

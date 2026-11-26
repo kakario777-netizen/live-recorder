@@ -220,6 +220,7 @@ class MainActivity : Activity() {
         if (ScreenOff.stalled(this) && !ScreenOff.exempt(this) && !batteryHelpShown) { batteryHelpShown = true; batteryHelp() }
         // 검은 화면 켜 두기가 켜져 있고 할 일이 있으면 다시 띄움
         else if (KeepOnActivity.on(this) && (Tidy.busy() || Uploader.busy())) startActivity(Intent(this, KeepOnActivity::class.java))
+        Encoder.start(this)
         if (RecordService.running) RecordService.addLog("앱 화면 열림 (탭 ${tabs.size}개" + (web.url?.let { ", 지금 탭: " + Names.siteName(it) } ?: "") + ")")
     }
 
@@ -851,6 +852,15 @@ class MainActivity : Activity() {
         line()
         toggle("변환 기록 남기기", "파일마다 크기·걸린 시간·속도를 기록 (아래에서 보기·복사)", prefs.getBoolean("convLog", true)) { v ->
             prefs.edit().putBoolean("convLog", v).apply()
+        }
+        line()
+        toggle("큰 파일은 인코딩폰으로 넘기기", "변환 대기가 20개 넘게 쌓이면 1GB 넘는 H.264는 변환하지 않고 원본 그대로 NAS '_변환대기'에 올림 (인코딩폰이 변환)", Tidy.offloadOn(ctx)) { v ->
+            prefs.edit().putBoolean("offloadOn", v).apply()
+        }
+        line()
+        toggle("이 폰을 인코딩폰으로 쓰기", "NAS '_변환대기'의 원본을 받아 H.265로 변환해 원래 폴더에 올림 (충전기에 꽂아 두기)", Encoder.on(ctx)) { v ->
+            Encoder.set(ctx, v)
+            if (v && !FtpConfig.ready(ctx)) Toast.makeText(ctx, "먼저 NAS 설정을 해 주세요", Toast.LENGTH_SHORT).show()
         }
         line()
         toggle("검은 화면 켜 두기", "화면이 꺼지면 변환이 느려지는 폰용 · 할 일이 있으면 밝기 최저 검은 화면으로 켜 둔 채 변환 (충전 중 권장)", KeepOnActivity.on(ctx)) { v ->

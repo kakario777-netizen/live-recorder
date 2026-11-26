@@ -197,6 +197,7 @@ class FilesActivity : Activity() {
             else -> "변환: 쉬는 중"
         }
         setName(convName, tc?.name ?: "")
+        if (Encoder.on(this)) { convLine.text = Encoder.currentName?.let { "인코딩폰 ${Encoder.stage} ${Encoder.percent}%" } ?: "인코딩폰: 기다리는 중"; setName(convName, Encoder.currentName ?: "") }
         val uc = Uploader.current
         upLine.text = when {
             !FtpConfig.ready(this) -> "업로드: NAS 설정을 먼저 해 주세요"

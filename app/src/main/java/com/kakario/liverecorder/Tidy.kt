@@ -415,6 +415,19 @@ object Tidy {
         // H.264면 정리하면서 H.265로 변환 (충전 중일 때만, 하드웨어 인코더 있을 때만)
         val mime = Codec.probeUri(ctx, input)
         converting = autoH265(ctx) && mime == android.media.MediaFormat.MIMETYPE_VIDEO_AVC && Codec.phoneHasHevcEncoder()
+        // 변환 대기가 쌓였고 큰 파일이면 변환하지 않고 인코딩폰에 넘김 (정리만 하고 원본 그대로 업로드)
+        if (converting && offloadable(ctx, job)) {
+            converting = false
+            if (tidied) {
+                dedupUsed?.delete(); dedupUsed = null
+                offload(ctx, job)
+                current = null; persist(); onChange?.invoke()
+                h.post { next(ctx) }
+                return
+            }
+            Uploader.markOffload(ctx, job.name)
+            RecordService.addLog("변환 대기가 많아 큰 파일은 인코딩폰으로 (정리만 하고 원본 그대로 올림): ${job.name}")
+        }
         if (false) {   // 충전 대기 없음: 바로 변환
             // H.264는 변환 없이 올리지 않음: 충전기를 꽂을 때까지 기다림
             converting = false
@@ -435,9 +448,10 @@ object Tidy {
         if (srcFile != null && !tidied) {
             remuxing = true
             var vBytes = 0L; var vUs = 0L
-            val err = synchronized(remuxLock) {
+            remuxLock.lock()
+            val err = try {
                 Remux.run(srcFile, rem) { p -> percent = p; onChange?.invoke() }.also { vBytes = Remux.lastVideoBytes; vUs = Remux.lastVideoUs }
-            }
+            } finally { remuxLock.unlock() }
             remuxing = false
             if (err == null && rem.length() > 0) {
                 dedupUsed?.delete()
@@ -528,7 +542,7 @@ object Tidy {
     @Volatile private var directStop: java.util.concurrent.atomic.AtomicBoolean? = null
 
     // ── 빠른 정리 줄: 변환이 필요 없는 파일(이미 H.265 등)은 긴 변환을 기다리지 않고 따로 정리 → 바로 업로드 ──
-    private val remuxLock = Any()
+    private val remuxLock = java.util.concurrent.locks.ReentrantLock(true)   // 공정하게: 원래 줄이 오래 기다리지 않게
     @Volatile var quickCurrent: String? = null; private set
     @Volatile var quickPercent = 0; private set
     @Volatile private var quickThread: Thread? = null
@@ -540,6 +554,23 @@ object Tidy {
         val p = j.path ?: return true
         val m = mimeCache.getOrPut(j.name) { Codec.probeUri(ctx, Uri.fromFile(File(p))) ?: "?" }
         return m == android.media.MediaFormat.MIMETYPE_VIDEO_AVC || m == "?"
+    }
+
+    // ── 인코딩폰에 넘기기: 변환 대기가 쌓이면 큰 H.264는 변환하지 않고 원본 그대로 NAS '_변환대기'로 ──
+    const val OFFLOAD_BACKLOG = 20
+    const val OFFLOAD_BIG = 1024L * 1024 * 1024
+    fun offloadOn(ctx: Context) = ctx.getSharedPreferences("main", Context.MODE_PRIVATE).getBoolean("offloadOn", true)
+    fun offloadable(ctx: Context, j: Job): Boolean {
+        if (!offloadOn(ctx) || !FtpConfig.ready(ctx) || Encoder.on(ctx)) return false
+        val p = j.path ?: return false
+        if (synchronized(queue) { queue.size } + 1 < OFFLOAD_BACKLOG) return false
+        if (File(p).length() < OFFLOAD_BIG) return false
+        return needsConvert(ctx, j)
+    }
+    private fun offload(ctx: Context, j: Job) {
+        Uploader.markOffload(ctx, j.name)
+        RecordService.addLog("변환 대기가 많아 큰 파일은 인코딩폰으로 → 원본 그대로 NAS '${Encoder.DIR}'에 올림: ${j.name}")
+        Uploader.enqueue(ctx, j.name, j.path ?: pathFor(j.name), j.streamer, allowH264 = true)
     }
 
     fun quickKick(ctx: Context) {
@@ -554,9 +585,17 @@ object Tidy {
         while (true) {
             // 큰 변환이 도는 동안만 (안 돌면 원래 줄이 바로 처리)
             if (!converting) break
-            val cands = synchronized(queue) { queue.filter { !isTidied(ctx, it.name) && it.path != null && it.name !in quickTried && it.name.lowercase().endsWith(".mp4") }.toList() }
-            val job = cands.firstOrNull { File(it.path!!).exists() && !RecordService.isActiveFile(it.name) && !needsConvert(ctx, it) } ?: break
+            val cands = synchronized(queue) { queue.filter { it.path != null && it.name !in quickTried && it.name.lowercase().endsWith(".mp4") }.toList() }
+                .filter { File(it.path!!).exists() && !RecordService.isActiveFile(it.name) }
+            // ① 변환 필요 없는 새 파일(정리만) → ② 인코딩폰에 넘길 큰 파일
+            val job = cands.firstOrNull { !isTidied(ctx, it.name) && !needsConvert(ctx, it) }
+                ?: cands.firstOrNull { offloadable(ctx, it) } ?: break
             if (!synchronized(queue) { queue.remove(job) }) continue
+            val off = needsConvert(ctx, job)
+            if (off && isTidied(ctx, job.name)) {
+                // 이미 정리된 큰 파일 → 바로 넘김
+                offload(ctx, job); persist(); onChange?.invoke(); continue
+            }
             quickTried.add(job.name)
             quickCurrent = job.name; quickPercent = 0; onChange?.invoke()
             val workDir = File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "tidy_quick").apply { mkdirs() }
@@ -566,13 +605,15 @@ object Tidy {
             try {
                 var src = File(job.path!!)
                 if (Mp4.removeDuplicateInits(src, dedup) > 0) src = dedup else dedup.delete()
-                val err = synchronized(remuxLock) { Remux.run(src, rem) { p -> quickPercent = p; onChange?.invoke() } }
+                while (remuxing) Thread.sleep(1000)   // 원래 줄이 정리 중이면 먼저 하게 양보
+                remuxLock.lock()
+                val err = try { Remux.run(src, rem) { p -> quickPercent = p; onChange?.invoke() } } finally { remuxLock.unlock() }
                 if (err == null && rem.length() > 0) {
                     replace(ctx, job, rem)
                     markTidied(ctx, job.name)
                     ok = true
                     RecordService.addLog("정리 완료 (변환 기다리지 않고 따로): ${job.name}")
-                    Uploader.enqueue(ctx, job.name, job.path, job.streamer)
+                    if (off) offload(ctx, job) else Uploader.enqueue(ctx, job.name, job.path, job.streamer)
                 } else RecordService.addLog("따로 정리 실패 → 원래 줄에서 다시: ${job.name} ($err)")
             } catch (e: Exception) {
                 RecordService.addLog("따로 정리 실패 → 원래 줄에서 다시: ${job.name} (${e.message})")
@@ -650,9 +691,10 @@ object Tidy {
         if (ok && out.length() > 0) {
             msg = try {
                 val before = job.path?.let { File(it).length() } ?: 0L
+                val outSize = out.length()
                 replace(ctx, job, out, keepOriginalInTrash = converting)
                 markTidied(ctx, job.name)
-                if (converting) "정리 + H.265 변환 완료: ${job.name} (${before / 1024 / 1024}MB → ${out.length() / 1024 / 1024}MB, H.264 원본은 휴지통 ${Uploader.trashLabel(ctx)})"
+                if (converting) "정리 + H.265 변환 완료: ${job.name} (${before / 1024 / 1024}MB → ${outSize / 1024 / 1024}MB, H.264 원본은 휴지통 ${Uploader.trashLabel(ctx)})"
                 else "정리 완료: ${job.name}"
             } catch (e: Exception) {
                 "정리본 저장 실패(원본 유지): ${e.message}"
@@ -701,7 +743,9 @@ object Tidy {
         if (p != null) {
             val target = File(p)
             val tmp = File(target.parentFile, ".tidy_" + target.name)
-            done.inputStream().use { i -> tmp.outputStream().use { o -> i.copyTo(o, 256 * 1024) } }
+            tmp.delete()
+            // 복사 대신 옮기기 (같은 저장소면 바로 끝남), 안 되면 복사
+            if (!done.renameTo(tmp)) done.inputStream().use { i -> tmp.outputStream().use { o -> i.copyTo(o, 256 * 1024) } }
             if (keepOriginalInTrash) {
                 // 변환 전 H.264 원본은 휴지통으로 (7일 보관)
                 val trash = File(Uploader.trashDir(), target.nameWithoutExtension + " (H.264 원본)." + target.extension)
