@@ -178,11 +178,11 @@ object Uploader {
     const val TICKET_DIR = "티켓방"
     fun isTicket(name: String) = name.contains("(티켓방 흐림)") || name.contains("blurred", true)
     const val SUB_DIR = "자막"
-    /** 티켓방 흐린 영상 → 스트리머/티켓방, 채팅 자막(.ass)이 같이 있는 영상 → 스트리머/자막, 나머지 → 스트리머 */
+    /** 영상: 스트리머 폴더 (티켓방 흐린 영상 → 스트리머/티켓방). 자막: 한국어 방송이면 영상 옆, 외국 방송이면 스트리머/자막 */
     fun folderFor(job: Job, hasSub: Boolean = false): String {
         if (job.folder.isNotEmpty()) return job.folder
         val s = Names.clean(job.streamer).ifEmpty { Names.streamerFromFileName(job.name) }.ifEmpty { "기타" }
-        val d = when { isTicket(job.name) -> "$s/$TICKET_DIR"; hasSub -> "$s/$SUB_DIR"; else -> s }
+        val d = if (isTicket(job.name)) "$s/$TICKET_DIR" else s
         // 인코딩폰에 넘기는 큰 원본: '_변환대기' 아래 같은 폴더 구조로 (인코딩폰이 변환해서 원래 자리로 옮김)
         return if (appCtx?.let { isOffload(it, job.name) } == true) "${Encoder.DIR}/$d" else d
     }
@@ -197,41 +197,66 @@ object Uploader {
         p.edit().putStringSet("offloadNames", set).apply()
     }
 
-    /** 업데이트 후 딱 한 번(1번 녹화폰만) NAS 정리:
-     *  - 티켓방 흐린 영상 → 스트리머/티켓방
-     *  - 채팅 자막(.ass)이 있는 영상 + 자막 → 스트리머/자막
-     *  - 메모장 채팅 기록(.chat.txt) → 지움 */
+    /** 채팅 자막이 한국어 방송인지: 대사 글자 중 한글이 20% 이상이면 한국어 */
+    fun isKoreanAss(text: String): Boolean {
+        var han = 0; var letters = 0
+        for (line in text.lineSequence()) {
+            if (!line.startsWith("Dialogue:")) continue
+            val body = line.split(',', limit = 10).getOrNull(9) ?: continue
+            for (c in body.replace(Regex("\\{[^}]*\\}"), "")) {
+                if (c in '\uAC00'..'\uD7A3' || c in '\u3131'..'\u318E') { han++; letters++ }
+                else if (c.isLetter()) letters++
+            }
+        }
+        return letters > 0 && han * 5 >= letters
+    }
+
+    /** 업데이트 후 딱 한 번(1번 녹화폰만) NAS 정리 (이전 정리에서 자막 있는 영상까지 '자막' 폴더로 옮긴 것 바로잡기):
+     *  - '자막' 폴더의 영상 → 스트리머 폴더로 되돌림
+     *  - 한국어 방송 자막 → 영상과 함께 스트리머 폴더
+     *  - 외국 방송 자막(.ass)만 → 스트리머/자막
+     *  - 티켓방 흐린 영상 → 스트리머/티켓방, 메모장(.chat.txt) → 지움 */
     @Volatile private var reorgRunning = false
     private fun nasReorgOnce(app: Context) {
         val p = app.getSharedPreferences("main", Context.MODE_PRIVATE)
-        if (p.getBoolean("nasReorg2Done", false) || reorgRunning || !CloudBm.primary(app)) return
+        if (p.getBoolean("nasReorg3Done", false) || reorgRunning || !CloudBm.primary(app)) return
         reorgRunning = true
         Thread({
-            var tk = 0; var sub = 0; var del = 0; var failed = 0
+            var back = 0; var foreign = 0; var tk = 0; var del = 0; var failed = 0
             try {
                 val f = connect(app)
                 try {
                     val base = FtpConfig.folder(app).trimEnd('/')
                     val dirs = (f.listDirectories(base.ifEmpty { "/" }) ?: emptyArray()).map { it.name.substringAfterLast('/') }
                         .filter { it.isNotEmpty() && it != "." && it != ".." && !it.startsWith("#") && !it.startsWith("@") && !it.startsWith("_") }
-                    fun move(from: String, toDir: String, n: String): Boolean { mkdirs(f, toDir); return f.rename("$from/$n", "$toDir/$n") }
+                    fun move(from: String, toDir: String, n: String): Boolean { mkdirs(f, toDir); f.deleteFile("$toDir/$n"); return f.rename("$from/$n", "$toDir/$n") }
+                    fun korean(path: String): Boolean = try {
+                        val ins = f.retrieveFileStream(path)
+                        if (ins == null) true else {
+                            val bytes = ins.use { it.readBytes() }
+                            f.completePendingCommand()
+                            isKoreanAss(String(bytes, Charsets.UTF_8))
+                        }
+                    } catch (_: Exception) { true }   // 모르면 그대로 둠(영상 옆)
+                    fun files(path: String) = (f.listFiles(path) ?: emptyArray()).filter { it.isFile }.map { it.name.substringAfterLast('/') }
                     for (d in dirs) {
-                        val dir = "$base/$d"
-                        val names = (f.listFiles(dir) ?: emptyArray()).filter { it.isFile }.map { it.name.substringAfterLast('/') }
-                        // 하위 폴더(티켓방·자막)에 이미 있는 메모장도 지움
-                        for (sd in listOf(TICKET_DIR, SUB_DIR)) (f.listFiles("$dir/$sd") ?: emptyArray()).filter { it.isFile && it.name.endsWith(".chat.txt") }
-                            .forEach { if (f.deleteFile("$dir/$sd/${it.name.substringAfterLast('/')}")) del++ else failed++ }
-                        val set = names.toHashSet()
-                        for (n in names) {
+                        val dir = "$base/$d"; val subDir = "$dir/$SUB_DIR"
+                        // 1. '자막' 폴더: 영상은 되돌리고, 한국어 자막도 되돌림
+                        for (n in files(subDir)) {
+                            if (n.endsWith(".part")) continue
+                            when {
+                                n.endsWith(".chat.txt") -> if (f.deleteFile("$subDir/$n")) del++ else failed++
+                                n.endsWith(".ass") -> if (korean("$subDir/$n")) { if (move(subDir, dir, n)) back++ else failed++ }
+                                else -> if (move(subDir, dir, n)) back++ else failed++
+                            }
+                        }
+                        // 2. 스트리머 폴더: 외국 자막만 '자막'으로, 티켓방 영상은 '티켓방'으로
+                        for (n in files(dir)) {
                             if (n.endsWith(".part")) continue
                             when {
                                 n.endsWith(".chat.txt") -> if (f.deleteFile("$dir/$n")) del++ else failed++
-                                n.endsWith(".ass") -> {}
+                                n.endsWith(".ass") -> if (!korean("$dir/$n")) { if (move(dir, subDir, n)) foreign++ else failed++ }
                                 isTicket(n) -> if (move(dir, "$dir/$TICKET_DIR", n)) tk++ else failed++
-                                (n.substringBeforeLast('.') + ".ass") in set -> {
-                                    val a = n.substringBeforeLast('.') + ".ass"
-                                    if (move(dir, "$dir/$SUB_DIR", n) && move(dir, "$dir/$SUB_DIR", a)) sub++ else failed++
-                                }
                             }
                         }
                     }
@@ -239,8 +264,8 @@ object Uploader {
                     try { f.logout() } catch (_: Exception) {}
                     try { f.disconnect() } catch (_: Exception) {}
                 }
-                if (failed == 0) p.edit().putBoolean("nasReorg2Done", true).apply()
-                RecordService.addLog("NAS 정리: 티켓방 영상 ${tk}개 · 자막 있는 영상 ${sub}개 옮김, 메모장 ${del}개 지움" + (if (failed > 0) " (실패 ${failed}개, 다음에 다시)" else ""))
+                if (failed == 0) p.edit().putBoolean("nasReorg3Done", true).apply()
+                RecordService.addLog("NAS 정리: 영상·한국어 자막 ${back}개 스트리머 폴더로 되돌림 · 외국 자막 ${foreign}개 '자막' 폴더로 · 티켓방 ${tk}개 · 메모장 ${del}개 지움" + (if (failed > 0) " (실패 ${failed}개, 다음에 다시)" else ""))
             } catch (e: Exception) {
                 RecordService.addLog("NAS 정리 못 함(다음에 다시): ${e.message}")
             } finally { reorgRunning = false }
@@ -480,7 +505,10 @@ object Uploader {
             percent = 100
             // 채팅 자막(.ass)도 같은 폴더에 올리고 크기 확인 (메모장 기록은 올리지 않음)
             companions(src).forEach { cf ->
-                val rp = "$dir/${cf.name}"
+                val streamerDir = FtpConfig.folder(ctx).trimEnd('/') + "/" + (Names.clean(job.streamer).ifEmpty { Names.streamerFromFileName(job.name) }.ifEmpty { "기타" })
+                val ko = try { isKoreanAss(cf.readText()) } catch (_: Exception) { true }
+                val assDir = if (ko) dir else "$streamerDir/$SUB_DIR".also { mkdirs(f, it) }
+                val rp = "$assDir/${cf.name}"
                 if (remoteSize(f, rp) != cf.length()) {
                     cf.inputStream().use { if (!f.storeFile(rp, it)) throw Exception("채팅 파일 올리기 실패: ${cf.name}") }
                     if (remoteSize(f, rp) != cf.length()) throw Exception("채팅 파일 크기 확인 실패: ${cf.name}")
